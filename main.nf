@@ -11,7 +11,7 @@ nextflow.enable.dsl = 2
 params.samples = null                     // YAML: samples, plus optional annotation/ref/include_bed/
                                            // region/min_coverage/mod_code/min_delta/z_threshold
 params.outdir  = "results"
-params.threads = 10
+params.threads = 4
 
 if (!params.samples) { error "Provide --samples cohort.yaml" }
 
