@@ -17,6 +17,12 @@ conda activate promethyl
 
 Key pinned tools/packages: `modkit=0.6.3`, `pandas`, `numpy`, `scipy`, `pyranges`, `pyyaml`.
 
+The optional PanelApp/HTML report add-ons ([below](#known-dmr-panelapp-gene-and-html-report-annotation-optional)) need `requests` and `jinja2`, not currently in `environment.yml`:
+
+```bash
+pip install requests jinja2 --break-system-packages
+```
+
 ## One-time setup: build the CpG island / promoter annotation
 
 Before running the pipeline, generate the annotation BED file that both pipeline modes rely on:
@@ -72,6 +78,30 @@ samples:
   - id: sample02
     bam: /data/bams/sample02.bam
 ```
+
+### Option 3 — Per-sample scripts directly (`run_sample.py` + `run_cohort.py`)
+
+These are the two scripts `main.nf` actually wraps under the hood (see below) — phase 1 runs per sample, phase 2 merges them into a cohort. Useful to run by hand for a single sample, for debugging outside Nextflow, or on a scheduler without a Nextflow setup (e.g. plain SLURM `sbatch` per sample).
+
+```bash
+# Phase 1 — once per sample
+python src/run_sample.py \
+    --id sample01 --bam /data/bams/sample01.bam \
+    --modkit-dir /data/modkit \
+    --annotation reference/CpGs_with_promoters.bed \
+    --output sample01.islands.tsv \
+    --threads 10
+
+# Phase 2 — once, across all samples' phase-1 output
+python src/run_cohort.py \
+    --samples sample01=sample01.islands.tsv sample02=sample02.islands.tsv \
+    --annotation reference/CpGs_with_promoters.bed \
+    --dmr-bed reference/known_DMRs.bed \
+    --min-cpg-sites 3 \
+    --output cohort_methylation.tsv
+```
+
+`--dmr-bed` and `--min-cpg-sites` (see [Known DMR, PanelApp, and HTML report annotation](#known-dmr-panelapp-gene-and-html-report-annotation-optional) below) are currently only available this way — `main.nf`'s `COHORT` process does not yet forward them, so they're not reachable through `nextflow run main.nf`.
 
 ### Convenience wrapper
 
@@ -159,8 +189,10 @@ To install promethyl once in a shared location and run batches from other direct
 3. **`CpG_meth.py`** — aggregates site-level calls to CpG islands and annotates with overlapping genes/promoters
 4. **`merge_trio.py`** — merges proband/father/mother methylation for trio mode
 5. **`cohort.py`** — builds the cross-sample matrix and detects per-sample outliers by z-score (cohort mode)
-6. **`annotate.py`** — attaches gene/promoter annotation to results
+6. **`annotate.py`** — attaches gene/promoter annotation to results, and (optional) known-DMR annotation via `--dmr-bed`
 7. **`statistics.py`** — trio-mode significance testing (Fisher's exact / chi-squared) with Benjamini–Hochberg FDR correction
+8. **`panelapp.py`** — (optional) annotates genes against PanelApp panel membership/confidence, locally cached
+9. **`generate_report.py`** — (optional) renders a cohort TSV as a sortable/searchable HTML report
 
 ## Key CLI options
 
@@ -171,6 +203,8 @@ To install promethyl once in a shared location and run batches from other direct
 | `--min-delta` | Minimum absolute methylation difference (proband vs. parent mean) | `0.3` |
 | `--fdr` | FDR significance threshold (trio mode) | `0.01` |
 | `--z-threshold` | Z-score threshold for outlier calling (cohort mode) | `2.0` |
+| `--min-cpg-sites` | Minimum CG positions backing a sample's own island call for it to be outlier-eligible (cohort mode, `run_cohort.py` only — see [below](#known-dmr-panelapp-gene-and-html-report-annotation-optional)) | `1` (no-op) |
+| `--dmr-bed` | Known-DMR reference BED; tags overlapping islands with `dmr_name`/`disorder` (cohort mode, `run_cohort.py` only) | — |
 | `--region` | Restrict `modkit pileup` to a genomic region (e.g. `chr1:1000000-1100000`) | — |
 | `--include-bed` | Restrict `modkit pileup` to regions in a BED file | — |
 | `--threads` | Threads for `modkit pileup` | `10` |
@@ -179,9 +213,38 @@ To install promethyl once in a shared location and run batches from other direct
 
 Trio mode writes one row per CpG island (wide form), with per-sample methylation/coverage columns and significance test results.
 
-Cohort mode (both `main.py --config` and `main.nf`) writes long-form output: one row per (CpG island, sample), with a `sample` column and per-sample metrics (`methylation`, `coverage`, `n_mod`, `n_canonical`, `delta`, `zscore`, `outlier`, `pval`, `padj`) as plain columns. Locus and cohort-level columns (`chrom`, `start`, `end`, `cpg_island`, gene/promoter annotation, `cohort_mean`, `cohort_std`, `cohort_median`, `n_outliers`, `any_outlier`) repeat across each island's sample rows.
+Cohort mode (`main.py --config`, `main.nf`, and `run_sample.py`/`run_cohort.py`) writes long-form output: one row per (CpG island, sample), with a `sample` column and per-sample metrics (`methylation`, `coverage`, `n_mod`, `n_canonical`, `n_cpg_sites`, `delta`, `zscore`, `outlier`, `pval`, `padj`) as plain columns. Locus and cohort-level columns (`chrom`, `start`, `end`, `cpg_island`, gene/promoter annotation, `cohort_mean`, `cohort_std`, `cohort_median`, `n_outliers`, `any_outlier`) repeat across each island's sample rows. `dmr_name`/`disorder` are also present when `run_cohort.py` was given `--dmr-bed`.
+
+`n_cpg_sites` is how many individual CG positions survived the `--min-coverage` filter and were summed into that island's `n_mod`/`coverage` for that sample — an island's z-score can be statistically extreme while resting on just one or two surviving sites, so it's worth checking before trusting an outlier call. See `--min-cpg-sites` above to gate on it directly.
+
+## Known DMR, PanelApp gene, and HTML report annotation (optional)
+
+Three optional add-ons, independent of each other and of the core pipeline — skip whichever you don't need.
+
+**Known DMR tagging.** `reference/known_DMRs.bed` (chrom, start, end, dmr_name, disorder) is a curated list of imprinted/disease-associated DMRs. Pass `--dmr-bed reference/known_DMRs.bed` to `run_cohort.py` (see Option 3 above) to tag any island overlapping one — an island can overlap more than one DMR, in which case `dmr_name` and `disorder` are `;`-joined and stay positionally paired (i.e. `dmr_name.split(';')[i]` always corresponds to `disorder.split(';')[i]`, empty string where a DMR has no listed disorder).
+
+**PanelApp gene annotation.** `src/panelapp.py` annotates gene symbols against [PanelApp Australia](https://panelapp-aus.org)'s panel membership and confidence level (Green/Amber/Red), for the HTML report's gene tags. Populate the local cache once with a full bulk download, rather than one live request per gene:
+
+```bash
+python src/panelapp.py --cache panelapp_cache.json
+```
+
+Re-run occasionally (e.g. monthly) to pick up PanelApp updates — not needed on every pipeline run once populated.
+
+**HTML report.** `src/generate_report.py` renders a cohort TSV (any of the three modes above) as a single sortable/searchable/filterable HTML file, with gene cells tagged by PanelApp confidence and DMR/disorder where applicable:
+
+```bash
+python src/generate_report.py \
+    --input cohort_methylation.tsv \
+    --output report.html \
+    --panelapp-cache panelapp_cache.json \
+    --outliers-only
+```
+
+Requires `jinja2` in addition to the base environment. `--outliers-only` restricts the report to rows where `outlier`/`any_outlier` is `TRUE`; omit it to include every row.
 
 ## Notes
 
-- Outputs, BAMs, BED/TSV files, and the `reference/` directory are git-ignored — regenerate them locally rather than committing.
+- Outputs, BAMs, and TSV files are git-ignored — regenerate them locally rather than committing.
+- `*.bed` is also git-ignored by default (it's meant to catch pipeline-output BEDs), but the curated reference files under `reference/` (`CPGIslandsBED3.bed`, `CpGs_with_promoters.bed`, `known_DMRs.bed`, etc.) are deliberately force-added past that rule and are tracked. If you add a new reference `.bed` file, it needs `git add -f` explicitly or it will silently stay untracked.
 - `--modkit-dir`, BAMs, and the reference FASTA are expected to live outside the repo.
