@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from CpG_meth import load_promoter_annotations
-from annotate import annotate_methylation
+from annotate import annotate_methylation, load_dmr_annotations, annotate_dmrs
 from cohort import build_cohort_matrix, detect_outliers, compute_cohort_statistics, to_long_format
 
 
@@ -31,10 +31,16 @@ def parse_args():
                         "same tissue (and, on chrX, the same sex too). Omit to compare every "
                         "sample against every other sample regardless of tissue/sex.")
     p.add_argument("--annotation", required=True, help="CpGs_with_promoters.bed")
+    p.add_argument("--dmr-bed", default=None,
+                    help="Known-DMR reference BED (chrom, start, end, dmr_name, disorder). "
+                         "If given, islands overlapping a known DMR are tagged in the output.")
     p.add_argument("--output", required=True, help="Output cohort TSV")
 
     p.add_argument("--min-delta", type=float, default=0.3, help="Minimum absolute methylation difference")
     p.add_argument("--z-threshold", type=float, default=2.0, help="Z-score threshold for outlier calling")
+    p.add_argument("--min-cpg-sites", type=int, default=1,
+                    help="Minimum surviving CG positions backing a sample's own island call "
+                         "for it to be eligible as an outlier (default 1 = no-op)")
 
     return p.parse_args()
 
@@ -97,8 +103,13 @@ def main():
                                        z_threshold=args.z_threshold)
     result = detect_outliers(result, all_ids, sample_meta=sample_meta,
                              min_delta=args.min_delta,
-                             z_threshold=args.z_threshold)
+                             z_threshold=args.z_threshold,
+                             min_cpg_sites=args.min_cpg_sites)
     result = annotate_methylation(result, ann_df)
+    if args.dmr_bed:
+        dmr_df = load_dmr_annotations(args.dmr_bed)
+        print(f"  {len(dmr_df):,} known DMRs loaded from {Path(args.dmr_bed).name}")
+        result = annotate_dmrs(result, dmr_df)
     result = to_long_format(result, all_ids)
 
     result.to_csv(output, sep="\t", index=False)

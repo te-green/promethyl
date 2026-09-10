@@ -97,6 +97,7 @@ def detect_outliers(
     sample_meta: dict | None = None,
     min_delta: float = 0.20,
     z_threshold: float = 2.0,
+    min_cpg_sites: int = 1,
     x_chrom_prefix: str = "chrX",
 ) -> pd.DataFrame:
     """
@@ -116,8 +117,23 @@ def detect_outliers(
     shared column, whenever sample_meta is supplied. group_n_<id> records
     how many samples were actually available for comparison at that site --
     check it before trusting an outlier call from a small group.
+
+    min_cpg_sites: minimum number of individual CG positions that must have
+    survived the per-site coverage filter and been summed into a SAMPLE's
+    own island-level call (n_mod_<sid>/coverage_<sid>) for that sample to be
+    eligible for an outlier flag at this island. This is independent of read
+    depth: a single CG position can be non-representative of the island
+    (allele-specific effects, local mapping artifacts) no matter how many
+    reads cover it, so it's a separate check from min_delta/z_threshold, not
+    a substitute for either. Default of 1 is a no-op (matches prior
+    behaviour) so existing callers aren't silently affected -- raise it once
+    you've looked at the n_cpg_sites distribution in your own cohort output.
+    Rows without an n_cpg_sites_<sid> column (older aggregate_to_islands()
+    output, before that fix) are never gated by this -- they pass through
+    exactly as before.
     """
     df = matrix.copy()
+
     meth_cols = {s: f"methylation_{s}" for s in sample_ids}
 
     if sample_meta is None:
@@ -163,9 +179,17 @@ def detect_outliers(
 
         df[f"delta_{sid}"]   = df[meth_col] - group_mean
         df[f"zscore_{sid}"]  = (df[meth_col] - group_mean) / group_std.replace(0, np.nan)
+
+        n_sites_col = f"n_cpg_sites_{sid}"
+        if n_sites_col in df.columns:
+            enough_sites = df[n_sites_col].fillna(0) >= min_cpg_sites
+        else:
+            enough_sites = True  # column not present (pre-fix aggregate_to_islands output) -- don't gate
+
         df[f"outlier_{sid}"] = (
             (df[f"zscore_{sid}"].abs() >= z_threshold) &
-            (df[f"delta_{sid}"].abs()  >= min_delta)
+            (df[f"delta_{sid}"].abs()  >= min_delta) &
+            enough_sites
         )
 
     # Summary columns

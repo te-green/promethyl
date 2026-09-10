@@ -79,7 +79,14 @@ def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.Da
     agg = (
         hits.groupby(["Chromosome", "Start", "End", "cpg_island"], as_index=False)
         .agg(
-            n_cpg_sites=("Start_b", "count"),
+            # Per-sample, not a single shared column: aggregate_to_islands() is
+            # called once per sample in the run_sample.py/cohort path, and even
+            # in trio mode different samples can in principle contribute
+            # different numbers of surviving CG sites. A per-sample name also
+            # lets this survive build_cohort_matrix()'s `endswith(f"_{sample_id}")`
+            # column filter, which previously dropped the old shared
+            # `n_cpg_sites` column silently before it ever reached the report.
+            **{f"n_cpg_sites_{s}": (f"n_mod_{s}",       "count") for s in samples},
             **{f"n_mod_{s}":       (f"n_mod_{s}",       "sum") for s in samples},
             **{f"n_canonical_{s}": (f"n_canonical_{s}", "sum") for s in samples},
             **{f"coverage_{s}":    (f"coverage_{s}",    "mean") for s in samples},
