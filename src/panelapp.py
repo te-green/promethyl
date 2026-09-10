@@ -63,6 +63,64 @@ def annotate_gene(symbol: str, session: requests.Session) -> list[dict]:
     return hits
 
 
+def bulk_download_all_genes(session: requests.Session, page_size: int = 1000, sleep: float = 0.34) -> dict:
+    """Walk every page of /api/v1/genes/ once and build a complete
+    symbol -> [panel hits] index locally, instead of one filtered request
+    per gene symbol.
+
+    This is a better fit than annotate_genes()'s per-gene queries once
+    your gene list is more than a couple dozen: request COUNT here is
+    bounded by the size of PanelApp's whole database (fixed, one-time),
+    not by how many distinct genes show up in your cohort's outliers
+    (which only grows). It also sidesteps a real uncertainty in
+    annotate_gene(): I was not able to confirm from outside your network
+    that the `entity_name=` server-side filter reliably narrows results
+    -- this walks the unfiltered listing and matches every record
+    client-side by gene_symbol, so there's nothing to trust there.
+
+    Safe to re-run occasionally to pick up PanelApp updates (new genes
+    added to panels, confidence changes) -- not needed on every pipeline
+    run once you've populated the cache once.
+    """
+    index: dict[str, list[dict]] = {}
+    url = PANELAPP_BASE
+    params = {"format": "json", "page_size": page_size}
+    page_n = 0
+    total = None
+    while url:
+        resp = session.get(url, params=params if page_n == 0 else None, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        total = total if total is not None else data.get("count")
+
+        for rec in data.get("results", []):
+            gd = rec.get("gene_data") or {}
+            symbol = gd.get("gene_symbol") or rec.get("entity_name")
+            if not symbol:
+                continue
+            conf = CONFIDENCE_LABELS.get(str(rec.get("confidence_level")), "Unknown")
+            index.setdefault(symbol, []).append({
+                "panel": (rec.get("panel") or {}).get("name", "?"),
+                "confidence": conf,
+                "moi": rec.get("mode_of_inheritance", "") or "",
+                "phenotypes": rec.get("phenotypes", []) or [],
+            })
+
+        page_n += 1
+        seen = min(page_n * page_size, total) if total else page_n * page_size
+        print(f"  bulk PanelApp download: page {page_n} ({seen:,}/{total or '?'} records, "
+              f"{len(index):,} symbols so far)")
+
+        url = data.get("next")
+        params = None  # page params are already folded into `next`
+        time.sleep(sleep)
+
+    for sym in index:
+        index[sym].sort(key=lambda x: -CONFIDENCE_RANK.get(x["confidence"], 0))
+    print(f"  PanelApp bulk download complete: {len(index):,} unique gene symbols indexed")
+    return index
+
+
 def load_cache(path: Path) -> dict:
     return json.loads(path.read_text()) if path.exists() else {}
 
@@ -93,3 +151,22 @@ def annotate_genes(symbols: set[str], cache_path: Path, sleep: float = 0.34) -> 
     save_cache(cache_path, cache)
     print(f"  PanelApp: {n_new} new lookups this run, {len(cache)} genes cached total")
     return cache
+
+if __name__ == "__main__":
+    import argparse
+
+    p = argparse.ArgumentParser(
+        description="One-time bulk download of the entire PanelApp gene database into a "
+                     "local cache, so generate_report.py never needs a live per-gene lookup "
+                     "for genes already covered by it.")
+    p.add_argument("--cache", default="panelapp_cache.json",
+                    help="Cache file to write (merged with any existing entries)")
+    p.add_argument("--page-size", type=int, default=1000)
+    args = p.parse_args()
+
+    cache_path = Path(args.cache)
+    existing = load_cache(cache_path)
+    bulk = bulk_download_all_genes(requests.Session(), page_size=args.page_size)
+    existing.update(bulk)  # bulk data wins on overlap -- it's the freshest, complete pull
+    save_cache(cache_path, existing)
+    print(f"  Cache written -> {cache_path} ({len(existing):,} total symbols)")
