@@ -101,7 +101,7 @@ python src/run_cohort.py \
     --output cohort_methylation.tsv
 ```
 
-`--dmr-bed` and `--min-cpg-sites` (see [Known DMR, PanelApp, and HTML report annotation](#known-dmr-panelapp-gene-and-html-report-annotation-optional) below) are currently only available this way — `main.nf`'s `COHORT` process does not yet forward them, so they're not reachable through `nextflow run main.nf`.
+`--dmr-bed` and `--min-cpg-sites` (see [Known DMR, PanelApp, and HTML report annotation](#known-dmr-panelapp-gene-and-html-report-annotation-optional) below) work here too, or via `dmr_bed`/`min_cpg_sites` keys in `sample.yml` under Nextflow ([below](#parallel-cohort-mode-nextflow)).
 
 ### Convenience wrapper
 
@@ -140,6 +140,8 @@ min_coverage: 10
 mod_code:     m
 min_delta:    0.3
 z_threshold:  2.0
+dmr_bed:       reference/known_DMRs.bed           # optional
+min_cpg_sites: 3                                   # optional, default 1 (no-op)
 ```
 
 `annotation` is required in the YAML; the rest fall back to the same defaults as `main.py` (shown above) when omitted.

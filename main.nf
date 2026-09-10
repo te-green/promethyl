@@ -9,7 +9,8 @@
 nextflow.enable.dsl = 2
 
 params.samples = null                     // YAML: samples, plus optional annotation/ref/include_bed/
-                                           // region/min_coverage/mod_code/min_delta/z_threshold
+                                           // region/min_coverage/mod_code/min_delta/z_threshold/
+                                           // dmr_bed/min_cpg_sites
 params.outdir  = "results"
 params.threads = 4
 
@@ -129,12 +130,15 @@ process COHORT {
     path annotation
     val min_delta
     val z_threshold
+    path dmr_bed
+    val min_cpg_sites
 
     output:
     path "cohort_methylation.tsv"
 
     script:
     def sample_meta_opt = sample_meta_args ? "--sample-meta ${sample_meta_args.join(' ')}" : ""
+    def dmr_bed_opt      = dmr_bed.name != 'NO_DMR' ? "--dmr-bed ${dmr_bed}" : ""
     """
     run_cohort.py \
         --samples ${sample_args.join(' ')} \
@@ -142,7 +146,9 @@ process COHORT {
         --annotation ${annotation} \
         --output cohort_methylation.tsv \
         --min-delta ${min_delta} \
-        --z-threshold ${z_threshold}
+        --z-threshold ${z_threshold} \
+        --min-cpg-sites ${min_cpg_sites} \
+        ${dmr_bed_opt}
     """
 }
 
@@ -160,6 +166,8 @@ workflow {
     mod_code     = cfg.mod_code     ?: "m"
     min_delta    = cfg.min_delta    ?: 0.3
     z_threshold  = cfg.z_threshold  ?: 2.0
+    dmr_bed       = cfg.dmr_bed       ? file(cfg.dmr_bed) : file('NO_DMR')
+    min_cpg_sites = cfg.min_cpg_sites ?: 1
 
     samples_ch = Channel
         .fromList(cfg.samples)
@@ -194,5 +202,5 @@ workflow {
         ? cfg.samples.collect { s -> "${s.id}=${s.tissue ?: 'NA'}=${s.sex ?: 'NA'}" }
         : []
 
-    COHORT(sample_args, sample_meta_args, annotation, min_delta, z_threshold)
+    COHORT(sample_args, sample_meta_args, annotation, min_delta, z_threshold, dmr_bed, min_cpg_sites)
 }
