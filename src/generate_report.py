@@ -42,6 +42,15 @@ TEMPLATE = Template(r"""<!doctype html>
   .tag-disorder { background: #ad1457; }
   .gene-cell   { max-width: 280px; white-space: normal; }
   .dmr-cell    { max-width: 260px; white-space: normal; }
+  tr.filter-row th { padding: 2px 4px; font-weight: normal; }
+  tr.filter-row input, tr.filter-row select {
+    width: 100%; box-sizing: border-box; font-size: 11px; padding: 2px 3px;
+  }
+  .clear-btn {
+    font-size: 11px; padding: 2px 9px; border-radius: 10px; border: 1px solid #ccc;
+    background: #fff; cursor: pointer; color: #444;
+  }
+  .clear-btn:hover { background: #f2f2f2; }
 </style>
 </head>
 <body>
@@ -57,9 +66,27 @@ TEMPLATE = Template(r"""<!doctype html>
   <span class="tag tag-dmr">DMR name</span>
   <span class="tag tag-disorder">associated disorder</span>
   (known DMRs, Table 1)
+  &nbsp;|&nbsp;
+  <button type="button" id="clear-filters" class="clear-btn">Clear filters</button>
 </div>
 <table id="report" class="display" style="width:100%">
-  <thead><tr>{% for col in columns %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+  <thead>
+    <tr>{% for col in columns %}<th>{{ col }}</th>{% endfor %}</tr>
+    <tr class="filter-row">
+      {% for col in columns %}
+      <th>
+        {% if column_filters[col].type == 'select' %}
+        <select data-col="{{ loop.index0 }}" class="col-filter">
+          <option value="">(All)</option>
+          {% for opt in column_filters[col].options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+        {% else %}
+        <input type="text" data-col="{{ loop.index0 }}" class="col-filter" placeholder="Filter...">
+        {% endif %}
+      </th>
+      {% endfor %}
+    </tr>
+  </thead>
   <tbody>
     {% for row in rows %}
     <tr class="{{ 'outlier-row' if row['_outlier'] else '' }}">
@@ -77,7 +104,24 @@ TEMPLATE = Template(r"""<!doctype html>
 <script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
 <script>
 $(document).ready(function () {
-  $('#report').DataTable({ pageLength: 25, order: [] });
+  var table = $('#report').DataTable({ pageLength: 25, order: [], orderCellsTop: true });
+
+  $('.col-filter').on('change keyup', function () {
+    var colIdx = $(this).data('col');
+    var val = $(this).val();
+    if ($(this).is('select')) {
+      // exact match on the selected value, empty selection clears the filter
+      var pattern = val ? '^' + $.fn.dataTable.util.escapeRegex(val) + '$' : '';
+      table.column(colIdx).search(pattern, true, false).draw();
+    } else {
+      table.column(colIdx).search(val).draw();
+    }
+  });
+
+  $('#clear-filters').on('click', function () {
+    $('.col-filter').val('');
+    table.columns().search('').draw();
+  });
 });
 </script>
 </body>
@@ -129,6 +173,29 @@ def render_dmr_cell(dmr_field: str, disorder_field: str) -> str:
     return " ".join(parts)
 
 
+
+
+def compute_column_filters(df: pd.DataFrame, columns: list[str], max_options: int = 20) -> dict:
+    """For each displayed column, decide dropdown (low-cardinality -- chrom,
+    tissue, outlier, etc.) vs free-text (everything else, including numeric
+    columns and gene/dmr_name -- those render as HTML tags, not their raw
+    value, so a dropdown of raw values wouldn't match what's on screen;
+    free-text search still works there since DataTables searches rendered
+    cell text, which usefully includes the tag labels).
+    """
+    filters = {}
+    for col in columns:
+        if col in ("gene", "dmr_name"):
+            filters[col] = {"type": "text", "options": []}
+            continue
+        series = df[col].fillna("").astype(str) if col in df.columns else pd.Series(dtype=str)
+        uniques = sorted(v for v in series.unique() if v != "")
+        if 0 < len(uniques) <= max_options:
+            filters[col] = {"type": "select", "options": uniques}
+        else:
+            filters[col] = {"type": "text", "options": []}
+    return filters
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--input", required=True, help="Cohort outlier TSV (run_cohort.py output)")
@@ -166,16 +233,17 @@ def main():
         )
 
     columns = [c for c in df.columns if not c.startswith("_") and c != "disorder"]
+    column_filters = compute_column_filters(df, columns)
     html = TEMPLATE.render(
         title=args.title,
         n_rows=len(df),
         generated=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         columns=columns,
+        column_filters=column_filters,
         rows=df.to_dict(orient="records"),
     )
     Path(args.output).write_text(html)
     print(f"✓ Report written -> {args.output}")
-
 
 if __name__ == "__main__":
     main()
