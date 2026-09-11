@@ -173,7 +173,7 @@ process REPORT {
     // actually passed in.
     """
     ${has_panelapp_cache ? "cp seed_cache.json panelapp_cache.json" : "echo '{}' > panelapp_cache.json"}
-    generate_report.py \
+    python3 ${projectDir}/src/generate_report.py \
         --input ${cohort_tsv} \
         --output report.html \
         --panelapp-cache panelapp_cache.json
