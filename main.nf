@@ -176,7 +176,8 @@ process REPORT {
     python3 ${projectDir}/src/generate_report.py \
         --input ${cohort_tsv} \
         --output report.html \
-        --panelapp-cache panelapp_cache.json
+        --panelapp-cache panelapp_cache.json \
+        --outliers-only
     """
 }
 
