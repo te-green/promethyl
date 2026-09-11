@@ -4,13 +4,14 @@
  *
  * Phase 1 (MODKIT, parallel per sample): modkit pileup + island aggregation.
  * Phase 2 (COHORT, single process):      cross-sample outlier analysis.
+ * Phase 3 (REPORT, single process):      render cohort TSV as HTML report.
  */
 
 nextflow.enable.dsl = 2
 
 params.samples = null                     // YAML: samples, plus optional annotation/ref/include_bed/
                                            // region/min_coverage/mod_code/min_delta/z_threshold/
-                                           // dmr_bed/min_cpg_sites
+                                           // dmr_bed/min_cpg_sites/panelapp_cache
 params.outdir  = "results"
 params.threads = 4
 
@@ -152,6 +153,36 @@ process COHORT {
     """
 }
 
+process REPORT {
+    publishDir params.outdir, mode: 'copy'
+
+    input:
+    path cohort_tsv
+    path panelapp_cache, stageAs: 'seed_cache.json'
+
+    output:
+    path "report.html"
+    path "panelapp_cache.json"
+
+    script:
+    // panelapp_cache is optional (NO_CACHE sentinel, same pattern as ref/include_bed/dmr_bed
+    // above). Staged under a fixed distinct name (stageAs) since the natural seed for this is
+    // a previous run's own published panelapp_cache.json -- without stageAs that would collide
+    // with the output name below. Copy rather than rely on the staged symlink so
+    // generate_report.py -> panelapp.py can write the updated cache back regardless of
+    // stageInMode. Publishing it back to outdir lets the next run seed from it via
+    // `panelapp_cache: results/panelapp_cache.json` in the samples YAML, so PanelApp only
+    // gets hit for genes not already cached.
+    def seed_cache = panelapp_cache.name != 'NO_CACHE'
+    """
+    ${seed_cache ? "cp seed_cache.json panelapp_cache.json" : "echo '{}' > panelapp_cache.json"}
+    generate_report.py \
+        --input ${cohort_tsv} \
+        --output report.html \
+        --panelapp-cache panelapp_cache.json
+    """
+}
+
 workflow {
     cfg = new org.yaml.snakeyaml.Yaml().load(file(params.samples).text)
 
@@ -168,6 +199,7 @@ workflow {
     z_threshold  = cfg.z_threshold  ?: 2.0
     dmr_bed       = cfg.dmr_bed       ? file(cfg.dmr_bed) : file('NO_DMR')
     min_cpg_sites = cfg.min_cpg_sites ?: 1
+    panelapp_cache = cfg.panelapp_cache ? file(cfg.panelapp_cache) : file('NO_CACHE')
 
     samples_ch = Channel
         .fromList(cfg.samples)
@@ -203,4 +235,6 @@ workflow {
         : []
 
     COHORT(sample_args, sample_meta_args, annotation, min_delta, z_threshold, dmr_bed, min_cpg_sites)
+
+    REPORT(COHORT.out, panelapp_cache)
 }
