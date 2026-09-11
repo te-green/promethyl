@@ -16,3 +16,4 @@ dependencies:
   - bedtools
   - modkit
   - samtools
+  - jinja2
