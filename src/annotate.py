@@ -13,7 +13,12 @@ def load_dmr_annotations(path: str) -> pd.DataFrame:
     semicolon-joining in annotate_dmrs().
     """
     cols = ["chrom", "start", "end", "dmr_name", "disorder"]
-    df = pd.read_csv(path, sep="\t", header=None, names=cols)
+    # reference/PMID-39090763-Table1-knownDMRs.bed ships with a header row
+    # (chrom/start/end/dmr_name/disorder) -- header=None previously treated that
+    # row as data, producing a bogus first entry with non-numeric start/end that
+    # breaks the PyRanges join in annotate_dmrs(). header=0 consumes it properly;
+    # names=cols still forces the expected names regardless of exact header text.
+    df = pd.read_csv(path, sep="\t", header=0, names=cols)
     df["disorder"] = df["disorder"].replace("", pd.NA)
     return df
 
