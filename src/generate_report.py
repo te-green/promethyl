@@ -40,8 +40,9 @@ TEMPLATE = Template(r"""<!doctype html>
   .tag-unknown { background: #9e9e9e; }
   .tag-dmr      { background: #5e35b1; }
   .tag-disorder { background: #ad1457; }
-  .gene-cell   { max-width: 280px; white-space: normal; }
+  .gene-cell   { max-width: 320px; white-space: normal; }
   .dmr-cell    { max-width: 260px; white-space: normal; }
+  .list-cell   { max-width: 220px; white-space: normal; word-break: break-word; }
   tr.filter-row th { padding: 2px 4px; font-weight: normal; }
   tr.filter-row input, tr.filter-row select {
     width: 100%; box-sizing: border-box; font-size: 11px; padding: 2px 3px;
@@ -94,6 +95,7 @@ TEMPLATE = Template(r"""<!doctype html>
         {% if col == 'gene' %}<td class="gene-cell">{{ row['_gene_html'] }}</td>
         {% elif col == 'dmr_name' %}<td class="dmr-cell">{{ row['_dmr_html'] }}</td>
         {% elif col == 'disorder' %}{# folded into the dmr_name cell above #}
+        {% elif col in ('transcript', 'gene_id') %}<td class="list-cell">{{ row[col].replace(';', '; ') }}</td>
         {% else %}<td>{{ row[col] }}</td>{% endif %}
       {% endfor %}
     </tr>
@@ -145,14 +147,12 @@ def render_gene_cell(gene_field: str, panelapp_cache: dict) -> str:
         if not hits:
             parts.append(sym)
             continue
-        best = hits[0]  # pre-sorted best-evidence-first
-        title = f'{best["confidence"]} evidence'
-        if len(hits) > 1:
-            title += f" — +{len(hits) - 1} more panel(s)"
-        parts.append(
-            f'{sym} <span class="tag {TAG_CLASS.get(best["confidence"], "tag-unknown")}" '
-            f'title="{title}">{best["panel"]}</span>'
+        tags = "".join(
+            f'<span class="tag {TAG_CLASS.get(h["confidence"], "tag-unknown")}" '
+            f'title="{h["confidence"]} evidence">{h["panel"]}</span>'
+            for h in hits
         )
+        parts.append(f'{sym} {tags}')
     return " ".join(parts)
 
 
