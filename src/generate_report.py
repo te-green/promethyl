@@ -95,7 +95,7 @@ TEMPLATE = Template(r"""<!doctype html>
         {% if col == 'gene' %}<td class="gene-cell">{{ row['_gene_html'] }}</td>
         {% elif col == 'dmr_name' %}<td class="dmr-cell">{{ row['_dmr_html'] }}</td>
         {% elif col == 'disorder' %}{# folded into the dmr_name cell above #}
-        {% elif col in ('transcript', 'gene_id') %}<td class="list-cell">{{ row[col].replace(';', '; ') }}</td>
+        {% elif col in ('transcript', 'gene_id') %}<td class="list-cell">{{ row[col].replace(';', ';<br>') | safe }}</td>
         {% else %}<td>{{ row[col] }}</td>{% endif %}
       {% endfor %}
     </tr>
