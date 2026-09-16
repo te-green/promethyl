@@ -160,6 +160,8 @@ process REPORT {
     path cohort_tsv
     path panelapp_cache, stageAs: 'seed_cache.json'
     val has_panelapp_cache
+    path report_script
+    path panelapp_script
 
     output:
     path "report.html"
@@ -171,9 +173,17 @@ process REPORT {
     // variable refers to the staged/renamed local copy (always 'seed_cache.json' thanks to
     // stageAs below), which would make this check always true regardless of what was
     // actually passed in.
+    //
+    // report_script/panelapp_script are declared as real path inputs (not just referenced
+    // via ${projectDir}) so their *contents* are part of this task's cache hash -- Nextflow
+    // only hashes the literal script: block text plus its declared inputs, so a path merely
+    // interpolated into a shell command (as this used to be) is invisible to -resume: editing
+    // generate_report.py previously never invalidated the cache at all. Staged under their
+    // own basenames (default stageAs) so `from panelapp import ...` inside generate_report.py
+    // still resolves via same-directory sys.path, same as when it ran from the repo directly.
     """
     ${has_panelapp_cache ? "cp seed_cache.json panelapp_cache.json" : "echo '{}' > panelapp_cache.json"}
-    python3 ${projectDir}/src/generate_report.py \
+    python3 ${report_script} \
         --input ${cohort_tsv} \
         --output report.html \
         --panelapp-cache panelapp_cache.json \
@@ -239,5 +249,6 @@ workflow {
 
     COHORT(sample_args, sample_meta_args, annotation, min_delta, z_threshold, dmr_bed, min_cpg_sites)
 
-    REPORT(COHORT.out, panelapp_cache, has_panelapp_cache)
+    REPORT(COHORT.out, panelapp_cache, has_panelapp_cache,
+           file("${projectDir}/src/generate_report.py"), file("${projectDir}/src/panelapp.py"))
 }

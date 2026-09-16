@@ -81,6 +81,8 @@ TEMPLATE = Template(r"""<!doctype html>
           <option value="">(All)</option>
           {% for opt in column_filters[col].options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
         </select>
+        {% elif column_filters[col].type == 'numeric' %}
+        <input type="text" data-col="{{ loop.index0 }}" class="col-filter col-filter-numeric" placeholder="e.g. &gt;=15">
         {% else %}
         <input type="text" data-col="{{ loop.index0 }}" class="col-filter" placeholder="Filter...">
         {% endif %}
@@ -108,6 +110,33 @@ TEMPLATE = Template(r"""<!doctype html>
 $(document).ready(function () {
   var table = $('#report').DataTable({ pageLength: 25, order: [], orderCellsTop: true });
 
+  // Numeric column filters (coverage_*, delta_*, zscore_*, padj_*, etc.) support
+  // >=, <=, >, <, = comparisons -- a bare number with no operator means exact match.
+  // DataTables' built-in column().search() only does substring/regex text matching,
+  // so numeric comparisons need a custom search plugin instead; it runs alongside
+  // (ANDs with) the normal per-column searches used for select/text filters below.
+  var numericFilters = {};
+
+  function parseNumericFilter(raw) {
+    var m = String(raw).trim().match(/^(>=|<=|>|<|=)?\s*(-?\d+\.?\d*)$/);
+    if (!m) return null;
+    return { op: m[1] || '=', val: parseFloat(m[2]) };
+  }
+
+  $.fn.dataTable.ext.search.push(function (settings, rowData) {
+    for (var colIdx in numericFilters) {
+      var f = numericFilters[colIdx];
+      var cell = parseFloat(rowData[colIdx]);
+      if (isNaN(cell)) return false;
+      if (f.op === '>=' && !(cell >= f.val)) return false;
+      if (f.op === '<=' && !(cell <= f.val)) return false;
+      if (f.op === '>'  && !(cell >  f.val)) return false;
+      if (f.op === '<'  && !(cell <  f.val)) return false;
+      if (f.op === '='  && !(cell === f.val)) return false;
+    }
+    return true;
+  });
+
   $('.col-filter').on('change keyup', function () {
     var colIdx = $(this).data('col');
     var val = $(this).val();
@@ -115,6 +144,16 @@ $(document).ready(function () {
       // exact match on the selected value, empty selection clears the filter
       var pattern = val ? '^' + $.fn.dataTable.util.escapeRegex(val) + '$' : '';
       table.column(colIdx).search(pattern, true, false).draw();
+    } else if ($(this).hasClass('col-filter-numeric')) {
+      if (!val) {
+        delete numericFilters[colIdx];
+      } else {
+        var parsed = parseNumericFilter(val);
+        // invalid/incomplete input (e.g. still typing "-") drops any active
+        // constraint for this column rather than filtering everything out
+        if (parsed) { numericFilters[colIdx] = parsed; } else { delete numericFilters[colIdx]; }
+      }
+      table.draw();
     } else {
       table.column(colIdx).search(val).draw();
     }
@@ -122,6 +161,7 @@ $(document).ready(function () {
 
   $('#clear-filters').on('click', function () {
     $('.col-filter').val('');
+    numericFilters = {};
     table.columns().search('').draw();
   });
 });
@@ -176,9 +216,10 @@ def render_dmr_cell(dmr_field: str, disorder_field: str) -> str:
 
 
 def compute_column_filters(df: pd.DataFrame, columns: list[str], max_options: int = 20) -> dict:
-    """For each displayed column, decide dropdown (low-cardinality -- chrom,
-    tissue, outlier, etc.) vs free-text (everything else, including numeric
-    columns and gene/dmr_name -- those render as HTML tags, not their raw
+    """For each displayed column, decide numeric (>=, <=, >, <, = comparisons --
+    coverage_*, delta_*, zscore_*, padj_*, etc.), dropdown (low-cardinality
+    non-numeric -- chrom, tissue, outlier, etc.), or free-text (everything
+    else, including gene/dmr_name -- those render as HTML tags, not their raw
     value, so a dropdown of raw values wouldn't match what's on screen;
     free-text search still works there since DataTables searches rendered
     cell text, which usefully includes the tag labels).
@@ -188,7 +229,15 @@ def compute_column_filters(df: pd.DataFrame, columns: list[str], max_options: in
         if col in ("gene", "dmr_name"):
             filters[col] = {"type": "text", "options": []}
             continue
-        series = df[col].fillna("").astype(str) if col in df.columns else pd.Series(dtype=str)
+        if col not in df.columns:
+            filters[col] = {"type": "text", "options": []}
+            continue
+        # bool is numeric-dtype in pandas too (outlier flags) -- keep those as a
+        # dropdown, not a >=/<= comparison, since TRUE/FALSE isn't ordinal here.
+        if pd.api.types.is_numeric_dtype(df[col]) and not pd.api.types.is_bool_dtype(df[col]):
+            filters[col] = {"type": "numeric", "options": []}
+            continue
+        series = df[col].fillna("").astype(str)
         uniques = sorted(v for v in series.unique() if v != "")
         if 0 < len(uniques) <= max_options:
             filters[col] = {"type": "select", "options": uniques}
