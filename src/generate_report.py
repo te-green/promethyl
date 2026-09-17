@@ -256,7 +256,15 @@ def main():
                     help="Only include rows flagged as an outlier")
     args = p.parse_args()
 
-    df = pd.read_csv(args.input, sep="\t")
+    # dtype=str on the text-y columns stops pandas from inferring a numeric/
+    # mixed dtype when a handful of rows have a blank dmr_name/disorder/etc
+    # (that's what the "Columns (0,1) have mixed types" warning was about).
+    # Any of these that are still NaN after this (fully-empty column, or a
+    # column not present in this input) get fillna'd below before templating.
+    df = pd.read_csv(
+        args.input, sep="\t",
+        dtype={"gene": str, "gene_id": str, "transcript": str, "dmr_name": str, "disorder": str},
+    )
 
     outlier_col = "outlier" if "outlier" in df.columns else ("any_outlier" if "any_outlier" in df.columns else None)
     if outlier_col:
@@ -282,6 +290,20 @@ def main():
         )
 
     columns = [c for c in df.columns if not c.startswith("_") and c != "disorder"]
+
+    # Any column the template touches directly via row[col] (i.e. everything
+    # except gene/dmr_name, which are rendered through _gene_html/_dmr_html)
+    # must not contain NaN by this point -- a NaN float reaching the
+    # template's `.replace(';', ...)` call (used for transcript/gene_id)
+    # crashes with "'float object' has no attribute 'replace'". Blank
+    # numeric columns are left alone since they render fine as NaN -> "nan"
+    # via {{ row[col] }} and numeric filtering depends on real dtypes.
+    for col in columns:
+        if col in ("gene", "dmr_name"):
+            continue
+        if pd.api.types.is_object_dtype(df[col]):
+            df[col] = df[col].fillna("")
+
     column_filters = compute_column_filters(df, columns)
     html = TEMPLATE.render(
         title=args.title,
