@@ -280,29 +280,27 @@ def main():
 
     panelapp_cache = annotate_genes(all_symbols, Path(args.panelapp_cache))
 
-    df["_gene_html"] = df.get("gene", "").fillna("").apply(lambda g: render_gene_cell(g, panelapp_cache))
+    # Every text-y column that can legitimately be blank (most rows have no gene,
+    # dmr_name, disorder, transcript or gene_id overlap) needs fillna("") here --
+    # the writer already does this in memory, but an empty string written to TSV
+    # comes back as NaN on this fresh read, regardless of the dtype= hint above:
+    # dtype=str produces pandas' StringDtype here (pandas 3.x), and
+    # pd.api.types.is_object_dtype() -- used by an earlier version of this dtype
+    # check -- returns False for StringDtype, so a dtype-detection-based fillna
+    # silently misses exactly the columns dtype=str was applied to. Just fillna
+    # all of them unconditionally instead; it's dtype-agnostic and version-proof.
+    for col in ("gene", "transcript", "gene_id", "dmr_name", "disorder"):
+        if col in df.columns:
+            df[col] = df[col].fillna("")
+
+    df["_gene_html"] = df.get("gene", "").apply(lambda g: render_gene_cell(g, panelapp_cache))
 
     if "dmr_name" in df.columns:
-        df["dmr_name"] = df["dmr_name"].fillna("")
-        df["disorder"] = df["disorder"].fillna("") if "disorder" in df.columns else ""
         df["_dmr_html"] = df.apply(
-            lambda r: render_dmr_cell(r["dmr_name"], r["disorder"]), axis=1
+            lambda r: render_dmr_cell(r["dmr_name"], r.get("disorder", "")), axis=1
         )
 
     columns = [c for c in df.columns if not c.startswith("_") and c != "disorder"]
-
-    # Any column the template touches directly via row[col] (i.e. everything
-    # except gene/dmr_name, which are rendered through _gene_html/_dmr_html)
-    # must not contain NaN by this point -- a NaN float reaching the
-    # template's `.replace(';', ...)` call (used for transcript/gene_id)
-    # crashes with "'float object' has no attribute 'replace'". Blank
-    # numeric columns are left alone since they render fine as NaN -> "nan"
-    # via {{ row[col] }} and numeric filtering depends on real dtypes.
-    for col in columns:
-        if col in ("gene", "dmr_name"):
-            continue
-        if pd.api.types.is_object_dtype(df[col]):
-            df[col] = df[col].fillna("")
 
     column_filters = compute_column_filters(df, columns)
     html = TEMPLATE.render(
