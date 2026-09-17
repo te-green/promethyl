@@ -99,6 +99,7 @@ process MODKIT {
     val region
     val min_coverage
     val mod_code
+    path dmr_bed
 
     output:
     tuple val(sample_id), path("${sample_id}.islands.tsv"), emit: islands
@@ -108,6 +109,7 @@ process MODKIT {
     def ref_opt         = ref.name != 'NO_REF'         ? "--ref ${ref}"                 : ""
     def include_bed_opt = include_bed.name != 'NO_BED' ? "--include-bed ${include_bed}" : ""
     def region_opt      = region                        ? "--region ${region}"           : ""
+    def dmr_bed_opt      = dmr_bed.name != 'NO_DMR'     ? "--dmr-bed ${dmr_bed}"          : ""
     """
     run_sample.py \
         --id ${sample_id} \
@@ -118,7 +120,7 @@ process MODKIT {
         --threads ${task.cpus} \
         --min-coverage ${min_coverage} \
         --mod-code ${mod_code} \
-        ${ref_opt} ${include_bed_opt} ${region_opt}
+        ${ref_opt} ${include_bed_opt} ${region_opt} ${dmr_bed_opt}
     """
 }
 
@@ -231,7 +233,7 @@ workflow {
 
     modkit_input_ch = checked.ok.mix(FIX_MM_TAGS.out.bam)
 
-    MODKIT(modkit_input_ch, annotation, ref, include_bed, region, min_coverage, mod_code)
+    MODKIT(modkit_input_ch, annotation, ref, include_bed, region, min_coverage, mod_code, dmr_bed)
 
     // Collect all "id path" pairs into one list, then run the cohort process once.
     sample_args = MODKIT.out.islands

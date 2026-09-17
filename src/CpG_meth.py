@@ -54,7 +54,7 @@ def annotate_cpg_sites(cpg_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.DataFra
     return result
 
 
-def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.DataFrame:
+def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_empty: bool = False) -> pd.DataFrame:
     # Infer sample IDs from column names dynamically
     samples = [c.replace("n_mod_", "") for c in merged_df.columns if c.startswith("n_mod_")]
 
@@ -74,6 +74,11 @@ def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.Da
     hits = island_pr.join(sites_pr, strandedness=False).df
 
     if hits.empty:
+        if allow_empty:
+            cols = ["chrom", "start", "end", "cpg_island"]
+            for s in samples:
+                cols += [f"n_cpg_sites_{s}", f"n_mod_{s}", f"n_canonical_{s}", f"coverage_{s}", f"methylation_{s}"]
+            return pd.DataFrame(columns=cols)
         raise ValueError("No CpG sites overlapped any CpG island — check annotation file.")
 
     agg = (

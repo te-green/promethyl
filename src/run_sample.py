@@ -15,7 +15,10 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from CpG_meth import load_promoter_annotations, aggregate_to_islands
+from annotate import load_dmr_annotations
 from run_modkit import get_sample_methylation
 
 
@@ -29,6 +32,13 @@ def parse_args():
     p.add_argument("--modkit-dir", required=True, help="Directory for modkit bedMethyl outputs")
     p.add_argument("--annotation", required=True, help="CpGs_with_promoters.bed")
     p.add_argument("--output", required=True, help="Output TSV for this sample's island methylation")
+    p.add_argument("--dmr-bed", default=None,
+                    help="Known-DMR reference BED (chrom,start,end,dmr_name,disorder). When given, "
+                         "each DMR is aggregated as its own region (same as a CpG island, but using "
+                         "the DMR's own exact boundaries) in addition to normal island aggregation, "
+                         "so a DMR isn't tested only via whatever generic island happens to overlap "
+                         "it. Needs --include-bed to actually cover the DMRs' full extent, or modkit "
+                         "won't have pileup data there in the first place.")
 
     p.add_argument("--ref", default=None, help="Reference FASTA for modkit pileup")
     p.add_argument("--threads", type=int, default=10, help="Threads for modkit pileup")
@@ -64,7 +74,7 @@ def main():
     print(f"  {len(ann_df):,} CpG island-promoter records loaded")
 
     print(f"=== [{args.id}] Load methylation data ===")
-    df = get_sample_methylation(
+    raw_df = get_sample_methylation(
         label=args.id,
         bam=bam,
         modkit_dir=modkit_dir,
@@ -76,12 +86,25 @@ def main():
         include_bed=args.include_bed,
     )
 
-    if df is None:
+    if raw_df is None:
         sys.exit(f"ERROR: [{args.id}] no CpG data produced — cannot continue")
 
     print(f"=== [{args.id}] Aggregate to CpG islands ===")
-    df = aggregate_to_islands(df, ann_df)
+    df = aggregate_to_islands(raw_df, ann_df)
+    df["is_dmr_region"] = False
     print(f"  {len(df):,} CpG islands with coverage for {args.id}")
+
+    if args.dmr_bed:
+        print(f"=== [{args.id}] Aggregate to known DMR regions ===")
+        dmr_df = load_dmr_annotations(args.dmr_bed)
+        # Aggregated on the DMR's own exact boundaries, not whatever CpG island(s)
+        # happen to overlap it -- reuses aggregate_to_islands() as-is by just
+        # renaming dmr_name to the column it expects (cpg_island).
+        dmr_as_islands = dmr_df[["chrom", "start", "end", "dmr_name"]].rename(columns={"dmr_name": "cpg_island"})
+        dmr_agg = aggregate_to_islands(raw_df, dmr_as_islands, allow_empty=True)
+        dmr_agg["is_dmr_region"] = True
+        print(f"  {len(dmr_agg):,} / {len(dmr_df):,} known DMRs with coverage for {args.id}")
+        df = pd.concat([df, dmr_agg], ignore_index=True)
 
     df.to_csv(output, sep="\t", index=False)
     print(f"  [{args.id}] written -> {output}")

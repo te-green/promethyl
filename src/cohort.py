@@ -72,7 +72,7 @@ def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
     many samples actually contributed data at each island, so
     low-N/singleton islands can be spotted or filtered downstream.
     """
-    coords = ["chrom", "start", "end", "cpg_island"]
+    coords = ["chrom", "start", "end", "cpg_island", "is_dmr_region"]
     matrix = None
     sample_ids = list(sample_dfs.keys())
 
