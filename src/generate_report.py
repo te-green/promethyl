@@ -9,6 +9,7 @@ Usage:
     python generate_report.py --input cohort_results.tsv --output report.html --outliers-only
 """
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,23 @@ from jinja2 import Template
 from panelapp import annotate_genes, CONFIDENCE_RANK
 
 TAG_CLASS = {"Green": "tag-green", "Amber": "tag-amber", "Red": "tag-red", "Unknown": "tag-unknown"}
+
+# Displayed with reduced-precision formatting + a narrow right-aligned cell, full
+# precision kept in the cell's title= tooltip. pval/padj use significant-figure
+# formatting (.2g) rather than fixed decimals (.2f) -- a p-value of 3.16e-22
+# rounded to 2 decimal *places* is just "0.00", which defeats the purpose.
+NUMERIC_DISPLAY_COLS = {
+    "coverage": "{:.2f}", "methylation": "{:.2f}", "group_mean": "{:.2f}",
+    "delta": "{:.2f}", "zscore": "{:.2f}",
+    "pval": "{:.2g}", "padj": "{:.2g}",
+}
+
+# Sample/location/gene/region first (the "what and where" of a hit), everything
+# else -- stats, coverage counts, cohort-wide summary columns -- follows in
+# whatever order they already occur in. transcript is dropped entirely (gene_id
+# covers it); disorder is folded into the dmr_name cell, never its own column.
+COLUMN_PRIORITY = ["sample", "chrom", "start", "end", "gene", "cpg_island", "dmr_name", "gene_id"]
+COLUMNS_DROPPED = {"transcript", "disorder"}
 
 TEMPLATE = Template(r"""<!doctype html>
 <html>
@@ -27,7 +45,7 @@ TEMPLATE = Template(r"""<!doctype html>
 <style>
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 24px; color: #1a1a1a; }
   h1 { font-size: 20px; margin-bottom: 4px; }
-  .subtitle { color: #666; margin-bottom: 18px; font-size: 13px; }
+  .subtitle { color: #666; margin-bottom: 4px; font-size: 13px; }
   .legend { margin-bottom: 14px; font-size: 12px; color: #444; }
   table.dataTable { font-size: 12.5px; }
   td, th { white-space: nowrap; }
@@ -40,9 +58,19 @@ TEMPLATE = Template(r"""<!doctype html>
   .tag-unknown { background: #9e9e9e; }
   .tag-dmr      { background: #5e35b1; }
   .tag-disorder { background: #ad1457; }
+
+  /* One gene per line -- each gene + its panel tags is its own block. */
   .gene-cell   { max-width: 320px; white-space: normal; }
   .dmr-cell    { max-width: 260px; white-space: normal; }
-  .list-cell   { max-width: 220px; white-space: normal; word-break: break-word; }
+
+  /* No max-width here -- scrollX (below) gives every column its natural width
+     instead of columns fighting for space inside a fixed 100%-wide table, which
+     was forcing gene_id to wrap even when this had a generous max-width. */
+  .list-cell   { white-space: normal; word-break: break-word; }
+
+  /* Reduced-precision numeric columns: narrow, right-aligned, full value on hover. */
+  .num-cell { max-width: 64px; text-align: right; font-variant-numeric: tabular-nums; cursor: default; }
+
   tr.filter-row th { padding: 2px 4px; font-weight: normal; }
   tr.filter-row input, tr.filter-row select {
     width: 100%; box-sizing: border-box; font-size: 11px; padding: 2px 3px;
@@ -52,11 +80,35 @@ TEMPLATE = Template(r"""<!doctype html>
     background: #fff; cursor: pointer; color: #444;
   }
   .clear-btn:hover { background: #f2f2f2; }
+
+  .panel-summary { margin-bottom: 16px; }
+  .panel-summary-title { font-size: 12.5px; font-weight: 600; color: #333; margin-bottom: 6px; }
+  .panel-pill {
+    display: inline-flex; align-items: center; gap: 6px; background: #f0f2f5; border: 1px solid #dfe3e8;
+    border-radius: 14px; padding: 4px 12px; margin: 0 6px 6px 0; font-size: 12px; cursor: pointer; color: #333;
+  }
+  .panel-pill:hover { background: #e4e8ed; }
+  .panel-pill.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .panel-pill .count { font-weight: 700; }
+
+  .panel-filter-row { margin-bottom: 12px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+  .panel-filter-row select { font-size: 12.5px; padding: 3px 6px; }
 </style>
 </head>
 <body>
 <h1>{{ title }}</h1>
 <div class="subtitle">{{ n_rows }} rows &middot; generated {{ generated }}</div>
+
+{% if panel_counts %}
+<div class="panel-summary">
+  <div class="panel-summary-title">Panels with hits</div>
+  <span class="panel-pill active" data-panel="">All panels <span class="count">({{ n_rows }})</span></span>
+  {% for panel, count in panel_counts %}
+  <span class="panel-pill" data-panel="{{ panel }}">{{ panel }} <span class="count">({{ count }})</span></span>
+  {% endfor %}
+</div>
+{% endif %}
+
 <div class="legend">
   PanelApp confidence:
   <span class="tag tag-green">Green</span> established &nbsp;
@@ -70,6 +122,17 @@ TEMPLATE = Template(r"""<!doctype html>
   &nbsp;|&nbsp;
   <button type="button" id="clear-filters" class="clear-btn">Clear filters</button>
 </div>
+
+{% if panel_counts %}
+<div class="panel-filter-row">
+  <label for="panel-select"><strong>Filter by gene panel:</strong></label>
+  <select id="panel-select">
+    <option value="">(All panels)</option>
+    {% for panel, count in panel_counts %}<option value="{{ panel }}">{{ panel }}</option>{% endfor %}
+  </select>
+</div>
+{% endif %}
+
 <table id="report" class="display" style="width:100%">
   <thead>
     <tr>{% for col in columns %}<th>{{ col }}</th>{% endfor %}</tr>
@@ -92,12 +155,12 @@ TEMPLATE = Template(r"""<!doctype html>
   </thead>
   <tbody>
     {% for row in rows %}
-    <tr class="{{ 'outlier-row' if row['_outlier'] else '' }}">
+    <tr class="{{ 'outlier-row' if row['_outlier'] else '' }}" data-panels="{{ row['_panels'] }}">
       {% for col in columns %}
         {% if col == 'gene' %}<td class="gene-cell">{{ row['_gene_html'] }}</td>
         {% elif col == 'dmr_name' %}<td class="dmr-cell">{{ row['_dmr_html'] }}</td>
-        {% elif col == 'disorder' %}{# folded into the dmr_name cell above #}
-        {% elif col in ('transcript', 'gene_id') %}<td class="list-cell">{{ row[col].replace(';', ';<br>') | safe }}</td>
+        {% elif col == 'gene_id' %}<td class="list-cell">{{ row[col].replace(';', ';<br>') | safe }}</td>
+        {% elif col in numeric_display_cols %}<td class="num-cell" title="{{ row[col] }}">{{ row['_fmt_' + col] }}</td>
         {% else %}<td>{{ row[col] }}</td>{% endif %}
       {% endfor %}
     </tr>
@@ -108,9 +171,16 @@ TEMPLATE = Template(r"""<!doctype html>
 <script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
 <script>
 $(document).ready(function () {
-  var table = $('#report').DataTable({ pageLength: 25, order: [], orderCellsTop: true });
+  // scrollX/scrollY (DataTables' native scroll handling, header pinned via its
+  // own internal split header/body tables) instead of a fixed 100%-wide table --
+  // this is also what stops narrower text columns like gene_id from being
+  // squeezed by the other ~15 columns competing for a fixed viewport width.
+  var table = $('#report').DataTable({
+    pageLength: 25, order: [], orderCellsTop: true,
+    scrollX: true, scrollY: '600px', scrollCollapse: true
+  });
 
-  // Numeric column filters (coverage_*, delta_*, zscore_*, padj_*, etc.) support
+  // Numeric column filters (coverage, delta, zscore, padj, etc.) support
   // >=, <=, >, <, = comparisons -- a bare number with no operator means exact match.
   // DataTables' built-in column().search() only does substring/regex text matching,
   // so numeric comparisons need a custom search plugin instead; it runs alongside
@@ -159,9 +229,38 @@ $(document).ready(function () {
     }
   });
 
+  // Gene-panel filter -- separate from the per-column filter row above, driven
+  // by either the dropdown or clicking a summary pill; both set the same filter.
+  var activePanel = '';
+  $.fn.dataTable.ext.search.push(function (settings, data, dataIndex) {
+    if (!activePanel) return true;
+    var panels = table.row(dataIndex).node().getAttribute('data-panels') || '';
+    return panels.split(';').indexOf(activePanel) !== -1;
+  });
+
+  $('#panel-select').on('change', function () {
+    activePanel = $(this).val();
+    $('.panel-pill').removeClass('active').filter(function () {
+      return $(this).data('panel') === activePanel;
+    }).addClass('active');
+    table.draw();
+  });
+
+  $('.panel-pill').on('click', function () {
+    activePanel = $(this).data('panel') || '';
+    $('#panel-select').val(activePanel);
+    $('.panel-pill').removeClass('active');
+    $(this).addClass('active');
+    table.draw();
+  });
+
   $('#clear-filters').on('click', function () {
     $('.col-filter').val('');
     numericFilters = {};
+    activePanel = '';
+    $('#panel-select').val('');
+    $('.panel-pill').removeClass('active');
+    $('.panel-pill[data-panel=""]').addClass('active');
     table.columns().search('').draw();
   });
 });
@@ -193,7 +292,17 @@ def render_gene_cell(gene_field: str, panelapp_cache: dict) -> str:
             for h in hits
         )
         parts.append(f'{sym} {tags}')
-    return " ".join(parts)
+    return "<br>".join(parts)
+
+
+def row_panels(gene_field: str, panelapp_cache: dict) -> str:
+    """';'-joined set of every distinct panel any gene in this row is on --
+    drives both the panel filter and the row's data-panels attribute."""
+    panels = set()
+    for sym in split_symbols(gene_field):
+        for hit in panelapp_cache.get(sym, []):
+            panels.add(hit["panel"])
+    return ";".join(sorted(panels))
 
 
 def render_dmr_cell(dmr_field: str, disorder_field: str) -> str:
@@ -263,7 +372,7 @@ def main():
     # column not present in this input) get fillna'd below before templating.
     df = pd.read_csv(
         args.input, sep="\t",
-        dtype={"gene": str, "gene_id": str, "transcript": str, "dmr_name": str, "disorder": str},
+        dtype={"gene": str, "gene_id": str, "dmr_name": str, "disorder": str},
     )
 
     outlier_col = "outlier" if "outlier" in df.columns else ("any_outlier" if "any_outlier" in df.columns else None)
@@ -281,26 +390,39 @@ def main():
     panelapp_cache = annotate_genes(all_symbols, Path(args.panelapp_cache))
 
     # Every text-y column that can legitimately be blank (most rows have no gene,
-    # dmr_name, disorder, transcript or gene_id overlap) needs fillna("") here --
-    # the writer already does this in memory, but an empty string written to TSV
-    # comes back as NaN on this fresh read, regardless of the dtype= hint above:
-    # dtype=str produces pandas' StringDtype here (pandas 3.x), and
+    # dmr_name, disorder or gene_id overlap) needs fillna("") here -- the writer
+    # already does this in memory, but an empty string written to TSV comes back
+    # as NaN on this fresh read, regardless of the dtype= hint above: dtype=str
+    # produces pandas' StringDtype here (pandas 3.x), and
     # pd.api.types.is_object_dtype() -- used by an earlier version of this dtype
     # check -- returns False for StringDtype, so a dtype-detection-based fillna
     # silently misses exactly the columns dtype=str was applied to. Just fillna
     # all of them unconditionally instead; it's dtype-agnostic and version-proof.
-    for col in ("gene", "transcript", "gene_id", "dmr_name", "disorder"):
+    for col in ("gene", "gene_id", "dmr_name", "disorder"):
         if col in df.columns:
             df[col] = df[col].fillna("")
 
     df["_gene_html"] = df.get("gene", "").apply(lambda g: render_gene_cell(g, panelapp_cache))
+    df["_panels"] = df.get("gene", "").apply(lambda g: row_panels(g, panelapp_cache))
 
     if "dmr_name" in df.columns:
         df["_dmr_html"] = df.apply(
             lambda r: render_dmr_cell(r["dmr_name"], r.get("disorder", "")), axis=1
         )
 
-    columns = [c for c in df.columns if not c.startswith("_") and c != "disorder"]
+    panel_counter = Counter()
+    for panels_str in df["_panels"]:
+        for panel in panels_str.split(";"):
+            if panel:
+                panel_counter[panel] += 1
+    panel_counts = sorted(panel_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    for col, fmt in NUMERIC_DISPLAY_COLS.items():
+        if col in df.columns:
+            df[f"_fmt_{col}"] = df[col].apply(lambda v, fmt=fmt: "" if pd.isna(v) else fmt.format(v))
+
+    columns = [c for c in df.columns if not c.startswith("_") and c not in COLUMNS_DROPPED]
+    columns = [c for c in COLUMN_PRIORITY if c in columns] + [c for c in columns if c not in COLUMN_PRIORITY]
 
     column_filters = compute_column_filters(df, columns)
     html = TEMPLATE.render(
@@ -309,6 +431,8 @@ def main():
         generated=pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         columns=columns,
         column_filters=column_filters,
+        numeric_display_cols=set(NUMERIC_DISPLAY_COLS),
+        panel_counts=panel_counts,
         rows=df.to_dict(orient="records"),
     )
     Path(args.output).write_text(html)
