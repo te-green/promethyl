@@ -66,7 +66,11 @@ TEMPLATE = Template(r"""<!doctype html>
   /* No max-width here -- scrollX (below) gives every column its natural width
      instead of columns fighting for space inside a fixed 100%-wide table, which
      was forcing gene_id to wrap even when this had a generous max-width. */
-  .list-cell   { white-space: normal; word-break: break-word; }
+  /* gene_id: one ID per line, each a nowrap block. word-break: break-word is
+     equivalent to overflow-wrap: anywhere, which lets the column's minimum
+     width collapse to a single character -- that's what broke IDs mid-string. */
+  .list-cell   { white-space: normal; }
+  .list-cell .id-line { display: block; white-space: nowrap; }
 
   /* Reduced-precision numeric columns: narrow, right-aligned, full value on hover. */
   .num-cell { max-width: 64px; text-align: right; font-variant-numeric: tabular-nums; cursor: default; }
@@ -159,7 +163,7 @@ TEMPLATE = Template(r"""<!doctype html>
       {% for col in columns %}
         {% if col == 'gene' %}<td class="gene-cell">{{ row['_gene_html'] }}</td>
         {% elif col == 'dmr_name' %}<td class="dmr-cell">{{ row['_dmr_html'] }}</td>
-        {% elif col == 'gene_id' %}<td class="list-cell">{{ row[col].replace(';', ';<br>') | safe }}</td>
+        {% elif col == 'gene_id' %}<td class="list-cell">{{ row['_id_html'] }}</td>
         {% elif col in numeric_display_cols %}<td class="num-cell" title="{{ row[col] }}">{{ row['_fmt_' + col] }}</td>
         {% else %}<td>{{ row[col] }}</td>{% endif %}
       {% endfor %}
@@ -268,6 +272,13 @@ $(document).ready(function () {
 </body>
 </html>
 """)
+
+
+def render_id_list(field: str) -> str:
+    """One ID per line, each in its own nowrap span so an ID like
+    ENSG00000239857.8 can never break mid-string."""
+    ids = [i for i in (field or "").split(";") if i]
+    return "".join(f'<span class="id-line">{i}</span>' for i in ids)
 
 
 def split_symbols(gene_field: str) -> list[str]:
@@ -404,6 +415,7 @@ def main():
 
     df["_gene_html"] = df.get("gene", "").apply(lambda g: render_gene_cell(g, panelapp_cache))
     df["_panels"] = df.get("gene", "").apply(lambda g: row_panels(g, panelapp_cache))
+    df["_id_html"] = df.get("gene_id", "").apply(render_id_list)
 
     if "dmr_name" in df.columns:
         df["_dmr_html"] = df.apply(
