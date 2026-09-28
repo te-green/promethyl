@@ -36,20 +36,6 @@ NUMERIC_DISPLAY_COLS = {
 COLUMN_PRIORITY = ["sample", "chrom", "start", "end", "gene", "cpg_island", "dmr_name", "gene_id"]
 COLUMNS_DROPPED = {"transcript", "disorder"}
 
-# Explicit, fixed widths -- not auto/content-driven -- so the layout is stable
-# and predictable regardless of what's in a given cell. gene_id is wide enough
-# for one full ENSG ID (e.g. ENSG00000239857.8) with real margin to spare.
-# Keyed by column name (not position) since optional columns (dmr_name,
-# is_dmr_region) can shift index depending on what a given run has.
-COLUMN_WIDTHS = {
-    "sample": "85px", "chrom": "55px", "start": "90px", "end": "90px",
-    "gene": "190px", "cpg_island": "100px", "dmr_name": "170px", "gene_id": "190px",
-    "is_dmr_region": "70px", "outlier": "70px", "any_outlier": "70px",
-    "n_samples_covered": "70px", "n_outliers": "70px", "group_n": "70px",
-    "n_canonical": "70px", "n_cpg_sites": "70px", "n_mod": "70px",
-}
-COLUMN_WIDTH_DEFAULT = "64px"  # covers the numeric stat columns (coverage/delta/zscore/padj/pval/...)
-
 TEMPLATE = Template(r"""<!doctype html>
 <html>
 <head>
@@ -61,9 +47,8 @@ TEMPLATE = Template(r"""<!doctype html>
   h1 { font-size: 20px; margin-bottom: 4px; }
   .subtitle { color: #666; margin-bottom: 4px; font-size: 13px; }
   .legend { margin-bottom: 14px; font-size: 12px; color: #444; }
-  table.dataTable { font-size: 12.5px; table-layout: fixed; }
+  table.dataTable { font-size: 12.5px; }
   td, th { white-space: nowrap; }
-  th { white-space: normal; word-break: break-word; max-width: 90px; vertical-align: bottom; }
   tr.outlier-row { background: #fff7f0; }
   .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
          font-weight: 600; color: #fff; margin: 1px 3px 1px 0; cursor: default; }
@@ -81,16 +66,7 @@ TEMPLATE = Template(r"""<!doctype html>
   /* No max-width here -- scrollX (below) gives every column its natural width
      instead of columns fighting for space inside a fixed 100%-wide table, which
      was forcing gene_id to wrap even when this had a generous max-width. */
-  /* Fixed width (see COLUMN_WIDTHS) is what actually stops wrapping now, not
-     word-break -- each ID is a nowrap span (render_id_list()) so it can never
-     break mid-token; word-break would fight against that if it were still set.
-     overflow/text-overflow/white-space all need to sit on the same element
-     (the line itself) to actually truncate -- splitting them across the
-     parent .list-cell and child .id-line wouldn't work. */
-  .list-cell   { white-space: normal; }
-  .list-cell .id-line {
-    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
+  .list-cell   { white-space: normal; word-break: break-word; }
 
   /* Reduced-precision numeric columns: narrow, right-aligned, full value on hover. */
   .num-cell { max-width: 64px; text-align: right; font-variant-numeric: tabular-nums; cursor: default; }
@@ -159,7 +135,7 @@ TEMPLATE = Template(r"""<!doctype html>
 
 <table id="report" class="display" style="width:100%">
   <thead>
-    <tr>{% for col in columns %}<th style="width: {{ column_widths.get(col, column_width_default) }};">{{ col }}</th>{% endfor %}</tr>
+    <tr>{% for col in columns %}<th>{{ col }}</th>{% endfor %}</tr>
     <tr class="filter-row">
       {% for col in columns %}
       <th>
@@ -183,7 +159,7 @@ TEMPLATE = Template(r"""<!doctype html>
       {% for col in columns %}
         {% if col == 'gene' %}<td class="gene-cell">{{ row['_gene_html'] }}</td>
         {% elif col == 'dmr_name' %}<td class="dmr-cell">{{ row['_dmr_html'] }}</td>
-        {% elif col == 'gene_id' %}<td class="list-cell">{{ row['_id_html'] }}</td>
+        {% elif col == 'gene_id' %}<td class="list-cell">{{ row[col].replace(';', ';<br>') | safe }}</td>
         {% elif col in numeric_display_cols %}<td class="num-cell" title="{{ row[col] }}">{{ row['_fmt_' + col] }}</td>
         {% else %}<td>{{ row[col] }}</td>{% endif %}
       {% endfor %}
@@ -200,7 +176,7 @@ $(document).ready(function () {
   // this is also what stops narrower text columns like gene_id from being
   // squeezed by the other ~15 columns competing for a fixed viewport width.
   var table = $('#report').DataTable({
-    pageLength: 25, order: [], orderCellsTop: true, autoWidth: false,
+    pageLength: 25, order: [], orderCellsTop: true,
     scrollX: true, scrollY: '600px', scrollCollapse: true
   });
 
@@ -292,16 +268,6 @@ $(document).ready(function () {
 </body>
 </html>
 """)
-
-
-def render_id_list(field: str) -> str:
-    """One ID per line, each in its own nowrap span so a single long ID (e.g.
-    ENSG00000239857.8) never breaks mid-token -- used for gene_id. Relying on
-    scrollX to give the column enough natural width wasn't reliable enough on
-    its own; explicit nowrap per ID plus a fixed column width (see
-    COLUMN_WIDTHS) is what actually guarantees this."""
-    ids = [i for i in (field or "").split(";") if i]
-    return "".join(f'<span class="id-line" title="{i}">{i}</span>' for i in ids)
 
 
 def split_symbols(gene_field: str) -> list[str]:
@@ -438,7 +404,6 @@ def main():
 
     df["_gene_html"] = df.get("gene", "").apply(lambda g: render_gene_cell(g, panelapp_cache))
     df["_panels"] = df.get("gene", "").apply(lambda g: row_panels(g, panelapp_cache))
-    df["_id_html"] = df.get("gene_id", "").apply(render_id_list)
 
     if "dmr_name" in df.columns:
         df["_dmr_html"] = df.apply(
@@ -467,8 +432,6 @@ def main():
         columns=columns,
         column_filters=column_filters,
         numeric_display_cols=set(NUMERIC_DISPLAY_COLS),
-        column_widths=COLUMN_WIDTHS,
-        column_width_default=COLUMN_WIDTH_DEFAULT,
         panel_counts=panel_counts,
         rows=df.to_dict(orient="records"),
     )
