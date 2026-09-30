@@ -149,7 +149,7 @@ TEMPLATE = Template(r"""<!doctype html>
           {% for opt in column_filters[col].options %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
         </select>
         {% elif column_filters[col].type == 'numeric' %}
-        <input type="text" data-col="{{ loop.index0 }}" class="col-filter col-filter-numeric" placeholder="e.g. &gt;=15">
+        <input type="text" data-col="{{ loop.index0 }}" class="col-filter col-filter-numeric" placeholder="e.g. abs&gt;=.3">
         {% else %}
         <input type="text" data-col="{{ loop.index0 }}" class="col-filter" placeholder="Filter...">
         {% endif %}
@@ -192,9 +192,13 @@ $(document).ready(function () {
   var numericFilters = {};
 
   function parseNumericFilter(raw) {
-    var m = String(raw).trim().match(/^(>=|<=|>|<|=)?\s*(-?\d+\.?\d*)$/);
+    // Optional leading "abs" makes the comparison apply to |value| -- useful
+    // for delta/zscore, where a hit can be hyper- or hypomethylated and you
+    // often want "either direction, magnitude >= X" rather than two separate
+    // filters (>=0.3 and <=-0.3) to catch both signs.
+    var m = String(raw).trim().match(/^(abs)?\s*(>=|<=|>|<|=)?\s*(-?\d+\.?\d*)$/i);
     if (!m) return null;
-    return { op: m[1] || '=', val: parseFloat(m[2]) };
+    return { abs: !!m[1], op: m[2] || '=', val: parseFloat(m[3]) };
   }
 
   $.fn.dataTable.ext.search.push(function (settings, rowData) {
@@ -202,6 +206,7 @@ $(document).ready(function () {
       var f = numericFilters[colIdx];
       var cell = parseFloat(rowData[colIdx]);
       if (isNaN(cell)) return false;
+      if (f.abs) cell = Math.abs(cell);
       if (f.op === '>=' && !(cell >= f.val)) return false;
       if (f.op === '<=' && !(cell <= f.val)) return false;
       if (f.op === '>'  && !(cell >  f.val)) return false;
