@@ -3,6 +3,7 @@
 # =====================
 output/
 *.tsv
+!docs/example_cohort_methylation.tsv
 *.bed
 *.bam
 *.bai

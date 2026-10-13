@@ -2,6 +2,36 @@
 
 CpG methylation analysis pipeline for PacBio HiFi long-read sequencing data. Runs `modkit pileup` on haplotagged BAMs (hg38), aggregates methylation to CpG islands, annotates against gene promoters, and tests for differential methylation — either within a trio (proband/father/mother) or across a cohort (outlier detection).
 
+## Quick start
+
+Cohort outlier analysis on an HPC (Nextflow + Slurm), from BAMs to an HTML report:
+
+```bash
+# 1. one-time: environments (see Requirements / Nextflow sections for details)
+export PROMETHYL_HOME=/path/to/promethyl
+conda env create -f $PROMETHYL_HOME/promethyl_environment.yml        -p $PROMETHYL_HOME/envs/promethyl
+conda env create -f $PROMETHYL_HOME/promethyl_report_environment.yml -p $PROMETHYL_HOME/envs/report
+
+# 2. one-time: promoter annotation + (optional) PanelApp cache
+python src/annotate_promoter_cpgs.py
+python src/panelapp.py --cache panelapp_cache.json
+
+# 3. describe your cohort (see cohort.yaml below), then run
+export PATH="$PROMETHYL_HOME/bin:$PATH"
+promethyl --samples cohort.yaml --outdir results
+```
+
+Outputs land in `results/`:
+
+| File | Contents |
+|---|---|
+| `cohort_methylation.tsv` | Long-form island × sample table with z-scores, p-values and outlier calls ([column descriptions](#output-columns)) |
+| `report.html` | Sortable/filterable outliers-only report ([example](#html-report-example)) |
+| `panelapp_cache.json` | PanelApp lookups used by the report |
+| `modkit/<sample>_modkit.bed` | Per-sample bedMethyl from `modkit pileup` |
+
+A small synthetic example of the cohort TSV is in [`docs/example_cohort_methylation.tsv`](docs/example_cohort_methylation.tsv) (6 samples, 5 islands, values are simulated — not patient data).
+
 ## Requirements
 
 - Conda / mamba
@@ -11,17 +41,13 @@ CpG methylation analysis pipeline for PacBio HiFi long-read sequencing data. Run
 Create the environment:
 
 ```bash
-conda env create -f environment.yml
+conda env create -f promethyl_environment.yml
 conda activate promethyl
 ```
 
 Key pinned tools/packages: `modkit=0.6.3`, `pandas`, `numpy`, `scipy`, `pyranges`, `pyyaml`.
 
-The optional PanelApp/HTML report add-ons ([below](#known-dmr-panelapp-gene-and-html-report-annotation-optional)) need `requests` and `jinja2`, not currently in `environment.yml`:
-
-```bash
-pip install requests jinja2 --break-system-packages
-```
+`promethyl_environment.yml` also includes `jinja2` and `requests`, which the PanelApp/HTML report add-ons ([below](#known-dmr-panelapp-gene-and-html-report-annotation-optional)) need. Under Nextflow the report step runs in its own small environment instead (`promethyl_report_environment.yml`, pandas/jinja2/requests only) — see [Parallel cohort mode](#parallel-cohort-mode-nextflow).
 
 ## One-time setup: build the CpG island / promoter annotation
 
@@ -117,7 +143,7 @@ Edit the `REF` variable near the top of the script to point at your local refere
 
 ### Parallel cohort mode (Nextflow)
 
-For cohort mode, `main.nf` parallelizes phase 1 (`modkit pileup` + island aggregation) across all samples, then runs phase 2 (cross-sample outlier analysis) once all samples finish:
+For cohort mode, `main.nf` parallelizes phase 1 (`modkit pileup` + island aggregation) across all samples, runs phase 2 (cross-sample outlier analysis) once all samples finish, then phase 3 renders the HTML report:
 
 ```bash
 nextflow run main.nf --samples sample.yml --outdir results
@@ -142,11 +168,28 @@ min_delta:    0.3
 z_threshold:  2.0
 dmr_bed:       reference/known_DMRs.bed           # optional
 min_cpg_sites: 3                                   # optional, default 1 (no-op)
+panelapp_cache: /path/to/panelapp_cache.json       # optional; seeds the report's PanelApp tags
 ```
+
+Add `tissue` and `sex` per sample to restrict each sample's comparison group to matching samples (on chrX the group is additionally matched on sex). A sample missing either value is left out of every comparison group, so it is neither tested nor used as a comparator:
+
+```yaml
+samples:
+  - id: sample01
+    bam: /data/bams/sample01.bam
+    tissue: WB
+    sex: female
+```
+
+When tissue/sex matching is used, the cohort-level `cohort_mean`/`cohort_std`/`cohort_median` columns are replaced by per-sample `group_mean`/`group_n` ([see below](#output-columns)).
 
 `annotation` is required in the YAML; the rest fall back to the same defaults as `main.py` (shown above) when omitted.
 
-Each sample runs as its own `MODKIT` process (so samples run concurrently, limited only by the executor's available resources), writing `results/modkit/<sample>_modkit.bed`. Once every sample's process completes, a single `COHORT` process merges their island-level outputs and writes `results/cohort_methylation.tsv`.
+Each sample runs as its own `MODKIT` process (so samples run concurrently, limited only by the executor's available resources), writing `results/modkit/<sample>_modkit.bed`. Once every sample's process completes, a single `COHORT` process merges their island-level outputs and writes `results/cohort_methylation.tsv`. A final `REPORT` process then renders `results/report.html` (outliers only) and writes `results/panelapp_cache.json`.
+
+Before `modkit pileup`, each BAM is checked for a mix of reads with and without `MM`/`ML` tags (which can hang modkit); BAMs that need it are fixed automatically. BAMs must already be indexed (`.bai`/`.csi`) — the pipeline stops with the `samtools index` command to run if an index is missing.
+
+Add `-resume` to a rerun to reuse completed tasks.
 
 `nextflow.config` defines a `standard` profile (local executor, the default) and a `slurm` profile (`-profile slurm`) for running on a Slurm cluster.
 
@@ -182,7 +225,7 @@ To install promethyl once in a shared location and run batches from other direct
    promethyl --samples cohort.yaml -profile slurm
    ```
 
-   `promethyl` just runs `nextflow run "$PROMETHYL_HOME/main.nf" "$@"`; Nextflow's `work/` directory and outputs still land in the current directory (the batch dir), only the pipeline code and env are shared. Put the `export PROMETHYL_HOME=...` and `export PATH=...` lines in a module file or shared shell profile so users don't set them by hand each time.
+   `promethyl` just runs `nextflow run "$PROMETHYL_HOME/main.nf" "$@"` (adding `-profile slurm` automatically on Linux unless you pass `-profile` yourself); Nextflow's `work/` directory and outputs still land in the current directory (the batch dir), only the pipeline code and env are shared. Put the `export PROMETHYL_HOME=...` and `export PATH=...` lines in a module file or shared shell profile so users don't set them by hand each time.
 
 ## Pipeline overview
 
@@ -194,7 +237,7 @@ To install promethyl once in a shared location and run batches from other direct
 6. **`annotate.py`** — attaches gene/promoter annotation to results, and (optional) known-DMR annotation via `--dmr-bed`
 7. **`statistics.py`** — trio-mode significance testing (Fisher's exact / chi-squared) with Benjamini–Hochberg FDR correction
 8. **`panelapp.py`** — (optional) annotates genes against PanelApp panel membership/confidence, locally cached
-9. **`generate_report.py`** — (optional) renders a cohort TSV as a sortable/searchable HTML report
+9. **`generate_report.py`** — renders a cohort TSV as a sortable/searchable HTML report (run automatically as the `REPORT` step under Nextflow)
 
 ## Key CLI options
 
@@ -215,9 +258,58 @@ To install promethyl once in a shared location and run batches from other direct
 
 Trio mode writes one row per CpG island (wide form), with per-sample methylation/coverage columns and significance test results.
 
-Cohort mode (`main.py --config`, `main.nf`, and `run_sample.py`/`run_cohort.py`) writes long-form output: one row per (CpG island, sample), with a `sample` column and per-sample metrics (`methylation`, `coverage`, `n_mod`, `n_canonical`, `n_cpg_sites`, `delta`, `zscore`, `outlier`, `pval`, `padj`) as plain columns. Locus and cohort-level columns (`chrom`, `start`, `end`, `cpg_island`, gene/promoter annotation, `cohort_mean`, `cohort_std`, `cohort_median`, `n_outliers`, `any_outlier`) repeat across each island's sample rows. `dmr_name`/`disorder` are also present when `run_cohort.py` was given `--dmr-bed`.
+Cohort mode (`main.py --config`, `main.nf`, and `run_sample.py`/`run_cohort.py`) writes long-form output: one row per (CpG island, sample), sorted by `chrom`, `start`, `end`, `sample`. Locus and island-level columns repeat across each island's sample rows; per-sample metrics are plain columns.
 
-`n_cpg_sites` is how many individual CG positions survived the `--min-coverage` filter and were summed into that island's `n_mod`/`coverage` for that sample — an island's z-score can be statistically extreme while resting on just one or two surviving sites, so it's worth checking before trusting an outlier call. See `--min-cpg-sites` above to gate on it directly.
+### Output columns
+
+Cohort TSV (`cohort_methylation.tsv`):
+
+| Column | Description |
+|---|---|
+| `chrom`, `start`, `end` | CpG island coordinates (hg38). For known-DMR rows, the DMR's own boundaries |
+| `cpg_island` | CpG island ID (the DMR name on known-DMR rows) |
+| `is_dmr_region` | `True` for rows aggregated on a known DMR's exact boundaries (only with `--dmr-bed`); `False` for ordinary CpG islands |
+| `n_samples_covered` | Number of samples with data at this island after the coverage filter |
+| `n_outliers` | Number of samples flagged as outliers at this island |
+| `any_outlier` | `True` if `n_outliers` > 0 |
+| `gene` | Gene symbol(s) whose promoter overlaps the island (`;`-joined) |
+| `transcript` | Transcript ID(s) for the overlapping promoter(s) (`;`-joined) |
+| `gene_id` | Ensembl gene ID(s) (`;`-joined) |
+| `dmr_name`, `disorder` | Known DMR(s) overlapping the island and the associated disorder(s) (`;`-joined, positionally paired). Only with `--dmr-bed` |
+| `cohort_mean`, `cohort_std`, `cohort_median` | Mean / SD / median methylation across all samples at this island. Only when no tissue/sex metadata is supplied |
+| `sample` | Sample ID for this row |
+| `methylation` | Island methylation fraction for this sample: `n_mod / (n_mod + n_canonical)` |
+| `n_mod`, `n_canonical` | Modified and canonical base counts summed over the island's CpG sites that passed `--min-coverage` |
+| `coverage` | Mean per-site read coverage across the island's surviving CpG sites |
+| `n_cpg_sites` | Number of individual CG positions summed into this island call. Low values mean a call rests on very few sites — see `--min-cpg-sites` |
+| `group_mean` | Mean methylation of this sample's comparison group at this island (the other samples, matched on tissue and, on chrX, sex). Only with tissue/sex metadata |
+| `group_n` | Number of comparison-group samples with data at this island. Check before trusting a call from a small group. Only with tissue/sex metadata |
+| `delta` | `methylation` minus the group (or cohort) mean |
+| `zscore` | `delta` divided by the group (or cohort) standard deviation |
+| `outlier` | `True` if `abs(zscore)` ≥ `--z-threshold` **and** `abs(delta)` ≥ `--min-delta` **and** `n_cpg_sites` ≥ `--min-cpg-sites` |
+| `pval` | Chi-squared test (no continuity correction) of this sample's `n_mod`/`n_canonical` against the pooled counts of its comparison group. `NaN` when no eligible comparison group exists (not tested, rather than not significant) |
+| `padj` | Benjamini–Hochberg adjusted `pval`, corrected across all tested islands for that sample |
+
+`outlier` is called from `zscore`, `delta` and `n_cpg_sites` only — `pval`/`padj` are reported alongside but are not part of the call.
+
+### HTML report example
+
+`generate_report.py` (run automatically as the last Nextflow step) turns the cohort TSV into a single sortable/searchable HTML file:
+
+![Example promethyl HTML report](docs/example_report.png)
+
+*Rendered from simulated data (see [`docs/example_cohort_methylation.tsv`](docs/example_cohort_methylation.tsv)).*
+
+Report columns are the cohort TSV columns above, with these differences:
+
+- `sample`, `chrom`, `start`, `end`, `gene`, `cpg_island`, `dmr_name`, `gene_id` are shown first, followed by the remaining columns in TSV order.
+- `transcript` is dropped (`gene_id` covers it) and `disorder` is folded into the `dmr_name` cell rather than shown as its own column.
+- `gene` cells are tagged with each gene's PanelApp panels, coloured by confidence: **Green** (established), **Amber** (moderate evidence), **Red** (limited evidence). No tag means the gene isn't in PanelApp.
+- `dmr_name` cells show the known DMR (purple) and its associated disorder (pink).
+- Outlier rows are shaded. `coverage`, `methylation`, `group_mean`, `delta` and `zscore` are shown to 2 decimal places and `pval`/`padj` to 2 significant figures; hover a cell for the full value.
+- Every column has a filter box; numeric columns accept comparisons such as `>=0.3`, `abs>=0.3` (either sign) or `<0.01`. A panel dropdown and clickable panel summary filter rows by PanelApp panel, and **Clear filters** resets everything.
+
+The report loads jQuery and DataTables from a CDN, so it needs internet access when opened in a browser.
 
 ## Known DMR, PanelApp gene, and HTML report annotation (optional)
 
@@ -243,7 +335,7 @@ python src/generate_report.py \
     --outliers-only
 ```
 
-Requires `jinja2` in addition to the base environment. `--outliers-only` restricts the report to rows where `outlier`/`any_outlier` is `TRUE`; omit it to include every row.
+`--outliers-only` restricts the report to rows where `outlier`/`any_outlier` is `TRUE`; omit it to include every row.
 
 ## Notes
 
