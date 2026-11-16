@@ -19,7 +19,7 @@ import pandas as pd
 
 from CpG_meth import load_promoter_annotations, aggregate_to_islands
 from annotate import load_dmr_annotations
-from run_modkit import get_sample_methylation
+from run_pbcpg import get_sample_methylation
 
 
 def parse_args():
@@ -29,7 +29,7 @@ def parse_args():
     )
     p.add_argument("--id", required=True, help="Sample ID")
     p.add_argument("--bam", required=True, help="Sample BAM file")
-    p.add_argument("--modkit-dir", required=True, help="Directory for modkit bedMethyl outputs")
+    p.add_argument("--methbat-dir", required=True, help="Directory for methbat outputs")
     p.add_argument("--annotation", required=True, help="CpGs_with_promoters.bed")
     p.add_argument("--output", required=True, help="Output TSV for this sample's island methylation")
     p.add_argument("--dmr-bed", default=None,
@@ -39,14 +39,8 @@ def parse_args():
                          "so a DMR isn't tested only via whatever generic island happens to overlap "
                          "it. Needs --include-bed to actually cover the DMRs' full extent, or modkit "
                          "won't have pileup data there in the first place.")
-
-    p.add_argument("--ref", default=None, help="Reference FASTA for modkit pileup")
     p.add_argument("--threads", type=int, default=10, help="Threads for modkit pileup")
-    p.add_argument("--region", default=None, help="Restrict modkit pileup to a genomic region")
-    p.add_argument("--include-bed", default=None, help="BED file to restrict modkit pileup to specific regions")
-
     p.add_argument("--min-coverage", type=int, default=10, help="Minimum read coverage per site")
-    p.add_argument("--mod-code", default="m", help="Modification code ('m'=5mC, 'h'=5hmC)")
 
     return p.parse_args()
 
@@ -54,7 +48,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    modkit_dir = Path(args.modkit_dir)
+    methbat_dir = Path(args.methbat_out)
     annotation = Path(args.annotation)
     output = Path(args.output)
 
@@ -67,7 +61,7 @@ def main():
     if not bam.exists():
         sys.exit(f"ERROR: BAM not found: {bam}")
 
-    modkit_dir.mkdir(parents=True, exist_ok=True)
+    methbat_out.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     ann_df = load_promoter_annotations(str(annotation))
@@ -77,7 +71,7 @@ def main():
     raw_df = get_sample_methylation(
         label=args.id,
         bam=bam,
-        modkit_dir=modkit_dir,
+        methbat_out=methbat_out,
         ref=args.ref,
         threads=args.threads,
         min_coverage=args.min_coverage,

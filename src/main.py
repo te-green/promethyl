@@ -21,15 +21,15 @@ Option 2:
 To run the cohort outlier pipeline:
     python main.py \
     --config sample.yaml \
-    --modkit-dir /data/modkit/ \
+    --methbat_dir /data/methbat/ \
     --annotation /Reference/CpGs_with_promoters.bed  \
     --ref /data/genome.fa \
-    --output /output-dir/ProbandModkit_cohort_methylation.tsv \
+    --output /output-dir/ProbandMethbat_cohort_methylation.tsv \
     --include-bed /Reference/CPGIslandsBED3.bed \
     --threads 10
 
 
-modkit pileup is skipped for any sample whose output already exists in --modkit-dir.
+methbat pileup is skipped for any sample whose output already exists in --modkit-dir.
 """
 
 import argparse
@@ -42,11 +42,11 @@ import pandas as pd
 import pyranges as pr
 from scipy.stats import fisher_exact, chi2_contingency
 
-from bedmethyl import filter_modification, filter_sites, read_bedmethyl
+from read_pbcpg import filter_modification, filter_sites, read_pbcpgtools
 from CpG_meth import load_promoter_annotations, aggregate_to_islands
 import yaml
 from cohort import load_config, build_cohort_matrix, detect_outliers, compute_cohort_statistics, to_long_format
-from run_modkit import run_modkit, get_sample_methylation
+from run_pbcpg import run_methbat, get_sample_methylation
 from merge_trio import merge_trio
 from annotate import annotate_methylation
 from statistics import compute_statistics
@@ -69,8 +69,8 @@ def parse_args():
     p.add_argument("--mother",  default=None, help="Mother BAM file")
 
     # modkit / annotation
-    p.add_argument("--modkit-dir", required=True,
-                   help="Directory for modkit bedMethyl outputs (generated if absent)")
+    p.add_argument("--methbat-dir", required=True,
+                   help="Directory for methbat outputs (generated if absent)")
     p.add_argument("--annotation", required=True,
                    help="CpGs_with_promoters.bed produced by annotate_promoter_cpgs.py")
 
@@ -80,13 +80,9 @@ def parse_args():
     # modkit options
     p.add_argument("--ref",     default=None, help="Reference FASTA for modkit pileup (recommended)")
     p.add_argument("--threads", type=int, default=10, help="Threads for modkit pileup")
-    p.add_argument("--region", default=None, help="Restrict modkit pileup to a genomic region (e.g. chr1:1000000-1100000)")
-    p.add_argument("--include-bed", default=None, help="BED file to restrict modkit pileup to specific regions (e.g. CpG islands)")
 
     # Filtering
     p.add_argument("--min-coverage", type=int, default=10, help="Minimum read coverage per site")
-    p.add_argument("--mod-code",     default="m", help="Modification code ('m'=5mC, 'h'=5hmC)")
-
     p.add_argument("--min-delta", type=float, default=0.3, help="Minimum absolute methylation difference (proband vs parent mean)")
     p.add_argument("--fdr", type=float, default=0.01, help="FDR threshold for significance")
 
@@ -100,7 +96,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    modkit_dir = Path(args.modkit_dir)
+    methbat_out = Path(args.methbat_out)
     annotation = Path(args.annotation)
     output     = Path(args.output)
 
@@ -117,7 +113,7 @@ def main():
             f"       Run annotate_promoter_cpgs.py first to generate it."
         )
 
-    modkit_dir.mkdir(parents=True, exist_ok=True)
+    methbat_out.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     # Load annotation (shared by both modes)
@@ -138,13 +134,9 @@ def main():
             df = get_sample_methylation(
                 label=sid,
                 bam=Path(row["bam"]),
-                modkit_dir=modkit_dir,
-                ref=args.ref,
+                methbat_out=methbat_out,
                 threads=args.threads,
                 min_coverage=args.min_coverage,
-                mod_code=args.mod_code,
-                region=args.region,
-                include_bed=getattr(args, "include_bed", None),
             )
 
             if df is None:
@@ -194,13 +186,10 @@ def main():
 
         print("=== Step 1: Load methylation data ===")
         common = dict(
-            modkit_dir=modkit_dir,
+            methbat_out=methbat_out,
             ref=args.ref,
             threads=args.threads,
-            min_coverage=args.min_coverage,
-            mod_code=args.mod_code,
-            region=args.region,
-            include_bed=getattr(args, "include_bed", None),
+            min_coverage=args.min_coverage,,
         )
         proband_df = get_sample_methylation("proband", Path(args.proband), **common)
         father_df  = get_sample_methylation("father",  Path(args.father),  **common)

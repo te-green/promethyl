@@ -66,7 +66,7 @@ def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
     nothing changed for the samples that *did* have coverage there.
 
     Samples without coverage at an island get NaN in their
-    methylation_/coverage_/n_mod_/n_canonical_ columns. Downstream
+    mod_score_/coverage_/mod_count_/unmod_count_columns. Downstream
     consumers (detect_outliers, compute_cohort_statistics) already skip
     NaN when building comparison groups. `n_samples_covered` records how
     many samples actually contributed data at each island, so
@@ -85,7 +85,7 @@ def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
         else:
             matrix = matrix.merge(sub, on=coords, how="outer")
 
-    meth_cols = [f"methylation_{sid}" for sid in sample_ids if f"methylation_{sid}" in matrix.columns]
+    meth_cols = [f"mod_score_{sid}" for sid in sample_ids if f"mod_score_{sid}" in matrix.columns]
     matrix["n_samples_covered"] = matrix[meth_cols].notna().sum(axis=1)
 
     return matrix
@@ -120,7 +120,7 @@ def detect_outliers(
 
     min_cpg_sites: minimum number of individual CG positions that must have
     survived the per-site coverage filter and been summed into a SAMPLE's
-    own island-level call (n_mod_<sid>/coverage_<sid>) for that sample to be
+    own island-level call (mod_count_<sid>/coverage_<sid>) for that sample to be
     eligible for an outlier flag at this island. This is independent of read
     depth: a single CG position can be non-representative of the island
     (allele-specific effects, local mapping artifacts) no matter how many
@@ -134,7 +134,7 @@ def detect_outliers(
     """
     df = matrix.copy()
 
-    meth_cols = {s: f"methylation_{s}" for s in sample_ids}
+    meth_cols = {s: f"mod_score_{s}" for s in sample_ids}
 
     if sample_meta is None:
         cohort_mean   = df[list(meth_cols.values())].mean(axis=1)
@@ -274,12 +274,12 @@ def compute_cohort_statistics(
     df = matrix.copy()
     is_x = df["chrom"].astype(str).str.startswith(x_chrom_prefix) if sample_meta is not None else None
 
-    def chi2_p(row, n_mod_a, n_can_a, n_mod_b, n_can_b):
-        if pd.isna(row[n_mod_a]) or pd.isna(row[n_can_a]) or pd.isna(row[n_mod_b]) or pd.isna(row[n_can_b]):
+    def chi2_p(row, mod_count_a, n_can_a, mod_count_b, n_can_b):
+        if pd.isna(row[mod_count_a]) or pd.isna(row[n_can_a]) or pd.isna(row[mod_count_b]) or pd.isna(row[n_can_b]):
             return np.nan
         table = [
-            [row[n_mod_a], row[n_can_a]],
-            [row[n_mod_b], row[n_can_b]],
+            [row[mod_count_a], row[n_can_a]],
+            [row[mod_count_b], row[n_can_b]],
         ]
         if any(sum(r) == 0 for r in table) or any(sum(c) == 0 for c in zip(*table)):
             return 1.0
@@ -287,7 +287,7 @@ def compute_cohort_statistics(
         return p
 
     for sid in sample_ids:
-        n_mod_rest = pd.Series(np.nan, index=df.index)
+        mod_count_rest = pd.Series(np.nan, index=df.index)
         n_can_rest = pd.Series(np.nan, index=df.index)
 
         if sample_meta is None:
@@ -295,29 +295,29 @@ def compute_cohort_statistics(
             # min_count=1: if every "rest" sample is NaN at this row (outer
             # merge), sum() would otherwise silently return 0 rather than
             # NaN, which chi2_p can't distinguish from a genuine zero count.
-            n_mod_rest[:] = df[[f"n_mod_{s}"       for s in rest]].sum(axis=1, min_count=1)
+            mod_count_rest[:] = df[[f"mod_count_{s}"       for s in rest]].sum(axis=1, min_count=1)
             n_can_rest[:] = df[[f"n_canonical_{s}" for s in rest]].sum(axis=1, min_count=1)
         else:
             group_auto = _comparison_group(sid, sample_ids, sample_meta, match_sex=False)
             group_x    = _comparison_group(sid, sample_ids, sample_meta, match_sex=True)
 
             if group_auto:
-                cols_mod, cols_can = [f"n_mod_{s}" for s in group_auto], [f"n_canonical_{s}" for s in group_auto]
-                n_mod_rest[~is_x] = df.loc[~is_x, cols_mod].sum(axis=1, min_count=1)
+                cols_mod, cols_can = [f"mod_count_{s}" for s in group_auto], [f"n_canonical_{s}" for s in group_auto]
+                mod_count_rest[~is_x] = df.loc[~is_x, cols_mod].sum(axis=1, min_count=1)
                 n_can_rest[~is_x] = df.loc[~is_x, cols_can].sum(axis=1, min_count=1)
             if group_x:
-                cols_mod, cols_can = [f"n_mod_{s}" for s in group_x], [f"n_canonical_{s}" for s in group_x]
-                n_mod_rest[is_x] = df.loc[is_x, cols_mod].sum(axis=1, min_count=1)
+                cols_mod, cols_can = [f"mod_count_{s}" for s in group_x], [f"n_canonical_{s}" for s in group_x]
+                mod_count_rest[is_x] = df.loc[is_x, cols_mod].sum(axis=1, min_count=1)
                 n_can_rest[is_x] = df.loc[is_x, cols_can].sum(axis=1, min_count=1)
 
-        df["_n_mod_rest"] = n_mod_rest
+        df["_mod_count_rest"] = mod_count_rest
         df["_n_can_rest"] = n_can_rest
 
         df[f"pval_{sid}"] = df.apply(
             chi2_p, axis=1,
-            n_mod_a=f"n_mod_{sid}",
+            mod_count_a=f"mod_count_{sid}",
             n_can_a=f"n_canonical_{sid}",
-            n_mod_b="_n_mod_rest",
+            mod_count_b="_mod_count_rest",
             n_can_b="_n_can_rest",
         )
 
@@ -328,6 +328,6 @@ def compute_cohort_statistics(
             padj[tested] = bh_adjust(pvals[tested])
         df[f"padj_{sid}"] = padj
 
-        df = df.drop(columns=["_n_mod_rest", "_n_can_rest"])
+        df = df.drop(columns=["_mod_count_\rest", "_n_can_rest"])
 
     return df

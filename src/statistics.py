@@ -26,11 +26,11 @@ def bh_adjust(pvals: pd.Series) -> np.ndarray:
     return np.clip(padj, 0.0, 1.0)
 
 
-def _fisher_p(row: pd.Series, n_mod_b: str, n_can_b: str) -> float:
+def _fisher_p(row: pd.Series, mod_count_b: str, n_can_b: str) -> float:
     """Two-sided Fisher's exact test: proband vs one comparator."""
     _, p = fisher_exact(
-        [[row["n_mod_proband"], row["n_canonical_proband"]],
-         [row[n_mod_b],         row[n_can_b]]],
+        [[row["mod_count_proband"], row["unmod_count_proband"]],
+         [row[mod_count_b],         row[n_can_b]]],
         alternative="two-sided",
     )
     return p
@@ -40,18 +40,18 @@ def compute_statistics(df: pd.DataFrame, min_delta: float = 0.3, fdr_threshold: 
     df = df.copy()
 
     # Deltas
-    df["delta_father"]      = df["methylation_proband"] - df["methylation_father"]
-    df["delta_mother"]      = df["methylation_proband"] - df["methylation_mother"]
-    df["delta_parent_mean"] = df["methylation_proband"] - (
-        (df["methylation_father"] + df["methylation_mother"]) / 2
+    df["delta_father"]      = df["mod_score_proband"] - df["mod_score_father"]
+    df["delta_mother"]      = df["mod_score_proband"] - df["mod_score_mother"]
+    df["delta_parent_mean"] = df["mod_score_proband"] - (
+        (df["mod_score_father"] + df["mod_score_mother"]) / 2
     )
 
     # Use chi-squared instead of Fisher's — less sensitive to large N
     # but still add effect size filter
-    def chi2_p(row, n_mod_b, n_can_b):
+    def chi2_p(row, mod_count_b, n_can_b):
         table = [
-            [row["n_mod_proband"], row["n_canonical_proband"]],
-            [row[n_mod_b],         row[n_can_b]],
+            [row["mod_count_proband"], row["unmod_count_proband"]],
+            [row[mod_count_b],         row[n_can_b]],
         ]
         # Return 1.0 if any row or column sums to zero
         if any(sum(r) == 0 for r in table) or any(sum(c) == 0 for c in zip(*table)):
@@ -59,13 +59,13 @@ def compute_statistics(df: pd.DataFrame, min_delta: float = 0.3, fdr_threshold: 
         _, p, _, _ = chi2_contingency(table, correction=False)
         return p
 
-    df["pval_father"]      = df.apply(chi2_p, axis=1, n_mod_b="n_mod_father",  n_can_b="n_canonical_father")
-    df["pval_mother"]      = df.apply(chi2_p, axis=1, n_mod_b="n_mod_mother",  n_can_b="n_canonical_mother")
+    df["pval_father"]      = df.apply(chi2_p, axis=1, mod_count_b="mod_count_father",  n_can_b="unmod_count_father")
+    df["pval_mother"]      = df.apply(chi2_p, axis=1, mod_count_b="mod_count_mother",  n_can_b="unmod_count_mother")
 
-    df["_n_mod_parents"] = df["n_mod_father"]    + df["n_mod_mother"]
-    df["_n_can_parents"] = df["n_canonical_father"] + df["n_canonical_mother"]
-    df["pval_parent_mean"] = df.apply(chi2_p, axis=1, n_mod_b="_n_mod_parents", n_can_b="_n_can_parents")
-    df = df.drop(columns=["_n_mod_parents", "_n_can_parents"])
+    df["_mod_count_parents"] = df["mod_count_father"]    + df["mod_count_mother"]
+    df["_n_can_parents"] = df["unmod_count_father"] + df["unmod_count_mother"]
+    df["pval_parent_mean"] = df.apply(chi2_p, axis=1, mod_count_b="_mod_count_parents", n_can_b="_n_can_parents")
+    df = df.drop(columns=["_mod_count_parents", "_n_can_parents"])
 
     # BH FDR
     df["padj_father"]      = bh_adjust(df["pval_father"])

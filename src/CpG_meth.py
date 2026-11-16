@@ -56,7 +56,7 @@ def annotate_cpg_sites(cpg_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.DataFra
 
 def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_empty: bool = False) -> pd.DataFrame:
     # Infer sample IDs from column names dynamically
-    samples = [c.replace("n_mod_", "") for c in merged_df.columns if c.startswith("n_mod_")]
+    samples = [c.replace("mod_count_", "") for c in merged_df.columns if c.startswith("mod_count_")]
 
     islands = (
         ann_df[["cpg_island", "chrom", "start", "end"]]
@@ -77,7 +77,7 @@ def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_em
         if allow_empty:
             cols = ["chrom", "start", "end", "cpg_island"]
             for s in samples:
-                cols += [f"n_cpg_sites_{s}", f"n_mod_{s}", f"n_canonical_{s}", f"coverage_{s}", f"methylation_{s}"]
+                cols += [f"n_cpg_sites_{s}", f"mod_count_{s}", f"unmod_count_{s}", f"coverage_{s}", f"mod_score_{s}"]
             return pd.DataFrame(columns=cols)
         raise ValueError("No CpG sites overlapped any CpG island — check annotation file.")
 
@@ -91,25 +91,25 @@ def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_em
             # lets this survive build_cohort_matrix()'s `endswith(f"_{sample_id}")`
             # column filter, which previously dropped the old shared
             # `n_cpg_sites` column silently before it ever reached the report.
-            **{f"n_cpg_sites_{s}": (f"n_mod_{s}",       "count") for s in samples},
-            **{f"n_mod_{s}":       (f"n_mod_{s}",       "sum") for s in samples},
-            **{f"n_canonical_{s}": (f"n_canonical_{s}", "sum") for s in samples},
+            **{f"n_cpg_sites_{s}": (f"mod_count_{s}",       "count") for s in samples},
+            **{f"mod_count_{s}":       (f"mod_count_{s}",       "sum") for s in samples},
+            **{f"unmod_count_{s}": (f"unmod_count_{s}", "sum") for s in samples},
             **{f"coverage_{s}":    (f"coverage_{s}",    "mean") for s in samples},
         )
     )
 
     for s in samples:
-        total = agg[f"n_mod_{s}"] + agg[f"n_canonical_{s}"]
-        agg[f"methylation_{s}"] = np.where(total > 0, agg[f"n_mod_{s}"] / total, np.nan)
+        total = agg[f"mod_count_{s}"] + agg[f"unmod_count_{s}"]
+        agg[f"mod_score_{s}"] = np.where(total > 0, agg[f"mod_count_{s}"] / total, np.nan)
 
     # Drop islands with zero total counts in any sample
     for s in samples:
-        total = agg[f"n_mod_{s}"] + agg[f"n_canonical_{s}"]
+        total = agg[f"mod_count_{s}"] + agg[f"unmod_count_{s}"]
         agg = agg[total > 0]
 
     return (
         agg
         .rename(columns={"Chromosome": "chrom", "Start": "start", "End": "end"})
-        .dropna(subset=[f"methylation_{s}" for s in samples])
+        .dropna(subset=[f"mod_score_{s}" for s in samples])
         .reset_index(drop=True)
     )
