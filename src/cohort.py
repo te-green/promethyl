@@ -328,6 +328,6 @@ def compute_cohort_statistics(
             padj[tested] = bh_adjust(pvals[tested])
         df[f"padj_{sid}"] = padj
 
-        df = df.drop(columns=["_mod_count_\rest", "_n_can_rest"])
+        df = df.drop(columns=["_mod_count_rest", "_n_can_rest"])
 
     return df
