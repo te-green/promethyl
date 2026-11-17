@@ -423,9 +423,12 @@ def main():
     df["_id_html"] = df.get("gene_id", "").apply(render_id_list)
 
     if "dmr_name" in df.columns:
-        df["_dmr_html"] = df.apply(
-            lambda r: render_dmr_cell(r["dmr_name"], r.get("disorder", "")), axis=1
-        )
+        if df.empty:
+            df["_dmr_html"] = ""
+        else:
+            df["_dmr_html"] = df.apply(
+                lambda r: render_dmr_cell(r["dmr_name"], r.get("disorder", "")), axis=1
+            )
 
     panel_counter = Counter()
     for panels_str in df["_panels"]:
