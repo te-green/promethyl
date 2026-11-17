@@ -296,17 +296,17 @@ def compute_cohort_statistics(
             # merge), sum() would otherwise silently return 0 rather than
             # NaN, which chi2_p can't distinguish from a genuine zero count.
             mod_count_rest[:] = df[[f"mod_count_{s}"       for s in rest]].sum(axis=1, min_count=1)
-            n_can_rest[:] = df[[f"n_canonical_{s}" for s in rest]].sum(axis=1, min_count=1)
+            n_can_rest[:] = df[[f"unmod_count_{s}" for s in rest]].sum(axis=1, min_count=1)
         else:
             group_auto = _comparison_group(sid, sample_ids, sample_meta, match_sex=False)
             group_x    = _comparison_group(sid, sample_ids, sample_meta, match_sex=True)
 
             if group_auto:
-                cols_mod, cols_can = [f"mod_count_{s}" for s in group_auto], [f"n_canonical_{s}" for s in group_auto]
+                cols_mod, cols_can = [f"mod_count_{s}" for s in group_auto], [f"unmod_count_{s}" for s in group_auto]
                 mod_count_rest[~is_x] = df.loc[~is_x, cols_mod].sum(axis=1, min_count=1)
                 n_can_rest[~is_x] = df.loc[~is_x, cols_can].sum(axis=1, min_count=1)
             if group_x:
-                cols_mod, cols_can = [f"mod_count_{s}" for s in group_x], [f"n_canonical_{s}" for s in group_x]
+                cols_mod, cols_can = [f"mod_count_{s}" for s in group_x], [f"unmod_count_{s}" for s in group_x]
                 mod_count_rest[is_x] = df.loc[is_x, cols_mod].sum(axis=1, min_count=1)
                 n_can_rest[is_x] = df.loc[is_x, cols_can].sum(axis=1, min_count=1)
 
@@ -316,7 +316,7 @@ def compute_cohort_statistics(
         df[f"pval_{sid}"] = df.apply(
             chi2_p, axis=1,
             mod_count_a=f"mod_count_{sid}",
-            n_can_a=f"n_canonical_{sid}",
+            n_can_a=f"unmod_count_{sid}",
             mod_count_b="_mod_count_rest",
             n_can_b="_n_can_rest",
         )
