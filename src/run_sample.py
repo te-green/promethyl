@@ -48,7 +48,7 @@ def parse_args():
 def main():
     args = parse_args()
 
-    methbat_dir = Path(args.methbat_out)
+    methbat_dir = Path(args.methbat_dir)
     annotation = Path(args.annotation)
     output = Path(args.output)
 
