@@ -155,7 +155,7 @@ def get_sample_methylation(
     label: str,
     bam: Path,
     methbat_dir: Path,
-    threads: int = 10,
+    threads: int = 6,
     min_coverage: int = 10,
 ) -> pd.DataFrame | None:
     """Run MethBat, load output and return per-sample methylation."""
