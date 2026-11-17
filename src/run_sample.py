@@ -71,7 +71,6 @@ def main():
         label=args.id,
         bam=bam,
         methbat_dir=methbat_dir,
-        ref=args.ref,
         threads=args.threads,
         min_coverage=args.min_coverage,
         mod_code=args.mod_code,
