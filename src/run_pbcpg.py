@@ -114,7 +114,7 @@ def load_sample_methylation(
     df = df[df["type"] == "Total"].copy()
 
     # Apply minimum coverage filter.
-    df = df[df["cov"] >= min_coverage].copy()
+    df = df[df["coverage"] >= min_coverage].copy()
 
     if df.empty:
         print(f"  [{label}] WARNING: no sites pass filters")
@@ -126,14 +126,14 @@ def load_sample_methylation(
             "start",
             "end",
             "mod_score",
-            "cov",
+            "coverage",
             "mod_count",
             "unmod_count",
         ]
     ].rename(
         columns={
             "mod_score": f"mod_score_{label}",
-            "cov": f"coverage_{label}",
+            "coverage": f"coverage_{label}",
             "mod_count": f"mod_count_{label}",
             "unmod_count": f"unmod_count_{label}",
         }
