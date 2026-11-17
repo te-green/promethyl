@@ -73,9 +73,6 @@ def main():
         methbat_dir=methbat_dir,
         threads=args.threads,
         min_coverage=args.min_coverage,
-        mod_code=args.mod_code,
-        region=args.region,
-        include_bed=args.include_bed,
     )
 
     if raw_df is None:
