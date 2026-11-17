@@ -25,7 +25,7 @@ TAG_CLASS = {"Green": "tag-green", "Amber": "tag-amber", "Red": "tag-red", "Unkn
 # rounded to 2 decimal *places* is just "0.00", which defeats the purpose.
 NUMERIC_DISPLAY_COLS = {
     "coverage": "{:.2f}", "methylation": "{:.2f}", "group_mean": "{:.2f}",
-    "delta": "{:.2f}", "zscore": "{:.2f}",
+    "delta": "{:.2f}", "zscore": "{:.2f}","mod_score": "{:.2f}",
     "pval": "{:.2g}", "padj": "{:.2g}",
 }
 
