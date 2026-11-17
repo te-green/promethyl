@@ -47,7 +47,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-
     methbat_dir = Path(args.methbat_dir)
     annotation = Path(args.annotation)
     output = Path(args.output)
@@ -61,7 +60,7 @@ def main():
     if not bam.exists():
         sys.exit(f"ERROR: BAM not found: {bam}")
 
-    methbat_out.mkdir(parents=True, exist_ok=True)
+    methbat_dir.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     ann_df = load_promoter_annotations(str(annotation))
@@ -71,7 +70,7 @@ def main():
     raw_df = get_sample_methylation(
         label=args.id,
         bam=bam,
-        methbat_out=methbat_out,
+        methbat_dir=methbat_dir,
         ref=args.ref,
         threads=args.threads,
         min_coverage=args.min_coverage,
