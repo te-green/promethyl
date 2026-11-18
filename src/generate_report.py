@@ -4,11 +4,16 @@ generate_report.py - Render a cohort outlier TSV (run_cohort.py output) as a
 single self-contained, sortable/searchable/filterable HTML report, with each
 gene tagged by its best PanelApp confidence level (Green/Amber/Red).
 
+The report has three tabs: Results, Run configuration (cohort YAML + run info),
+and Column descriptions.
+
 Usage:
-    python generate_report.py --input cohort_results.tsv --output report.html
-    python generate_report.py --input cohort_results.tsv --output report.html --outliers-only
+    python generate_report.py --input cohort_results.tsv --output report.html --config cohort.yaml
+    python generate_report.py --input cohort_results.tsv --output report.html --config cohort.yaml --outliers-only
 """
 import argparse
+import platform
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -25,7 +30,7 @@ TAG_CLASS = {"Green": "tag-green", "Amber": "tag-amber", "Red": "tag-red", "Unkn
 # rounded to 2 decimal *places* is just "0.00", which defeats the purpose.
 NUMERIC_DISPLAY_COLS = {
     "coverage": "{:.2f}", "methylation": "{:.2f}", "group_mean": "{:.2f}",
-    "delta": "{:.2f}", "zscore": "{:.2f}","mod_score": "{:.2f}",
+    "delta": "{:.2f}", "zscore": "{:.2f}", "mod_score": "{:.2f}",
     "pval": "{:.2g}", "padj": "{:.2g}",
     "hap1_mod_score": "{:.2f}", "hap2_mod_score": "{:.2f}", "asm_pval": "{:.2g}",
 }
@@ -41,6 +46,38 @@ COLUMNS_DROPPED = {"transcript", "disorder"}
 COLUMNS_DROPPED |= {"hap1_mod_count", "hap1_unmod_count", "hap2_mod_count", "hap2_unmod_count",
                     "n_hap_sites", "asm_delta", "asm_padj"}
 
+# Descriptions shown in the "Column descriptions" tab. Edit freely -- these are
+# first-draft wordings; any displayed column missing here is listed with a
+# placeholder and reported on stderr so nothing silently goes undocumented.
+COLUMN_DESCRIPTIONS = {
+    "sample": "Sample ID.",
+    "chrom": "Chromosome of the tested region.",
+    "start": "Start coordinate of the tested region.",
+    "end": "End coordinate of the tested region.",
+    "gene": "Gene symbol(s) overlapping the region. Tags show the best PanelApp confidence "
+            "(Green/Amber/Red) for each panel the gene is on; no tag = not in PanelApp.",
+    "cpg_island": "CpG island (tested region) identifier / coordinates.",
+    "dmr_name": "Known DMR overlapped by the region (purple tag), with its associated disorder (pink tag).",
+    "gene_id": "Ensembl gene ID(s) overlapping the region, one per line.",
+    "coverage": "Read / CpG-call coverage supporting the region for this sample.",
+    "methylation": "Methylation level of the region in this sample (fraction, 0-1).",
+    "group_mean": "Mean methylation of the comparison group (tissue- and sex-matched) for this region.",
+    "delta": "methylation minus group_mean. Positive = hypermethylated (red row shading), "
+             "negative = hypomethylated (blue row shading).",
+    "zscore": "Z-score of the sample's methylation relative to the comparison group.",
+    "mod_score": "Region-level modification score for this sample.",
+    "pval": "p-value for the sample vs comparison group test.",
+    "padj": "Multiple-testing-adjusted p-value.",
+    "outlier": "TRUE if the region passed the outlier thresholds for this sample.",
+    "any_outlier": "TRUE if the region was an outlier by any of the applied criteria.",
+    "hap1_mod_score": "Modification score for haplotype 1 across the region.",
+    "hap2_mod_score": "Modification score for haplotype 2 across the region.",
+    "asm_flag": "TRUE if the region shows allele-specific methylation (significant difference between "
+                "haplotypes, minimum coverage of 5 per haplotype).",
+    "asm_pval": "p-value for the between-haplotype (chi-squared) test.",
+}
+MISSING_DESCRIPTION = "No description yet (add to COLUMN_DESCRIPTIONS in generate_report.py)."
+
 TEMPLATE = Template(r"""<!doctype html>
 <html>
 <head>
@@ -50,11 +87,30 @@ TEMPLATE = Template(r"""<!doctype html>
 <style>
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 24px; color: #1a1a1a; }
   h1 { font-size: 20px; margin-bottom: 4px; }
-  .subtitle { color: #666; margin-bottom: 4px; font-size: 13px; }
+  .subtitle { color: #666; margin-bottom: 12px; font-size: 13px; }
   .legend { margin-bottom: 14px; font-size: 12px; color: #444; }
   table.dataTable { font-size: 12.5px; }
   td, th { white-space: nowrap; }
-  tr.outlier-row { background: #fff7f0; }
+
+  /* Tabs */
+  .tab-bar { display: flex; gap: 4px; border-bottom: 1px solid #ccc; margin-bottom: 16px; }
+  .tab-btn { font-size: 13px; padding: 7px 16px; border: 1px solid transparent; border-bottom: none;
+             background: none; cursor: pointer; color: #555; border-radius: 6px 6px 0 0; }
+  .tab-btn:hover { background: #f2f2f2; }
+  .tab-btn.active { background: #fff; border-color: #ccc; color: #1a1a1a; font-weight: 600;
+                    margin-bottom: -1px; border-bottom: 1px solid #fff; }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* Row shading by methylation state (outlier rows; sign of delta) */
+  tr.row-hyper > td { background-color: #fdecee; }
+  tr.row-hypo  > td { background-color: #e9f1fc; }
+  tr.outlier-row > td { background-color: #fff7f0; }  /* fallback when no delta column */
+  .swatch { display: inline-block; width: 12px; height: 12px; border: 1px solid #bbb;
+            vertical-align: -2px; margin: 0 3px 0 0; }
+  .swatch-hyper { background: #fdecee; }
+  .swatch-hypo  { background: #e9f1fc; }
+
   .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
          font-weight: 600; color: #fff; margin: 1px 3px 1px 0; cursor: default; }
   .tag-green   { background: #2e7d32; }
@@ -69,11 +125,8 @@ TEMPLATE = Template(r"""<!doctype html>
   .dmr-cell    { max-width: 260px; white-space: normal; }
 
   /* No max-width here -- scrollX (below) gives every column its natural width
-     instead of columns fighting for space inside a fixed 100%-wide table, which
-     was forcing gene_id to wrap even when this had a generous max-width. */
-  /* gene_id: one ID per line, each a nowrap block. word-break: break-word is
-     equivalent to overflow-wrap: anywhere, which lets the column's minimum
-     width collapse to a single character -- that's what broke IDs mid-string. */
+     instead of columns fighting for space inside a fixed 100%-wide table. */
+  /* gene_id: one ID per line, each a nowrap block. */
   .list-cell   { white-space: normal; }
   .list-cell .id-line { display: block; white-space: nowrap; }
 
@@ -90,33 +143,34 @@ TEMPLATE = Template(r"""<!doctype html>
   }
   .clear-btn:hover { background: #f2f2f2; }
 
-  .panel-summary { margin-bottom: 16px; }
-  .panel-summary-title { font-size: 12.5px; font-weight: 600; color: #333; margin-bottom: 6px; }
-  .panel-pill {
-    display: inline-flex; align-items: center; gap: 6px; background: #f0f2f5; border: 1px solid #dfe3e8;
-    border-radius: 14px; padding: 4px 12px; margin: 0 6px 6px 0; font-size: 12px; cursor: pointer; color: #333;
-  }
-  .panel-pill:hover { background: #e4e8ed; }
-  .panel-pill.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
-  .panel-pill .count { font-weight: 700; }
-
   .panel-filter-row { margin-bottom: 12px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
   .panel-filter-row select { font-size: 12.5px; padding: 3px 6px; }
+
+  /* Config + column description tabs */
+  .info-table { border-collapse: collapse; font-size: 13px; margin-bottom: 20px; }
+  .info-table th, .info-table td { text-align: left; vertical-align: top; padding: 5px 14px 5px 0;
+                                   border-bottom: 1px solid #eee; white-space: normal; }
+  .info-table th { font-weight: 600; color: #444; white-space: nowrap; }
+  .info-table code, .config-pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .config-pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 12px 14px;
+                overflow-x: auto; white-space: pre; max-width: 1100px; }
+  .section-title { font-size: 14px; font-weight: 600; margin: 4px 0 8px; }
+  .muted { color: #888; }
+  .col-name { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: nowrap; }
 </style>
 </head>
 <body>
 <h1>{{ title }}</h1>
 <div class="subtitle">{{ n_rows }} rows &middot; generated {{ generated }}</div>
 
-{% if panel_counts %}
-<div class="panel-summary">
-  <div class="panel-summary-title">Panels with hits</div>
-  <span class="panel-pill active" data-panel="">All panels <span class="count">({{ n_rows }})</span></span>
-  {% for panel, count in panel_counts %}
-  <span class="panel-pill" data-panel="{{ panel }}">{{ panel }} <span class="count">({{ count }})</span></span>
-  {% endfor %}
+<div class="tab-bar">
+  <button type="button" class="tab-btn active" data-tab="tab-results">Results</button>
+  <button type="button" class="tab-btn" data-tab="tab-config">Run configuration</button>
+  <button type="button" class="tab-btn" data-tab="tab-columns">Column descriptions</button>
 </div>
-{% endif %}
+
+<!-- ============================ TAB 1: RESULTS ============================ -->
+<div id="tab-results" class="tab-pane active">
 
 <div class="legend">
   PanelApp confidence:
@@ -129,6 +183,10 @@ TEMPLATE = Template(r"""<!doctype html>
   <span class="tag tag-disorder">associated disorder</span>
   (known DMRs, Table 1)
   &nbsp;|&nbsp;
+  Row shading: <span class="swatch swatch-hypo"></span>hypomethylated
+  <span class="swatch swatch-hyper" style="margin-left:8px"></span>hypermethylated
+  {% if not shade_all %}<span class="muted">(outlier rows only)</span>{% endif %}
+  &nbsp;|&nbsp;
   <button type="button" id="clear-filters" class="clear-btn">Clear filters</button>
 </div>
 
@@ -136,8 +194,8 @@ TEMPLATE = Template(r"""<!doctype html>
 <div class="panel-filter-row">
   <label for="panel-select"><strong>Filter by gene panel:</strong></label>
   <select id="panel-select">
-    <option value="">(All panels)</option>
-    {% for panel, count in panel_counts %}<option value="{{ panel }}">{{ panel }}</option>{% endfor %}
+    <option value="">(All panels) &ndash; {{ n_rows }} rows</option>
+    {% for panel, count in panel_counts %}<option value="{{ panel }}">{{ panel }} ({{ count }})</option>{% endfor %}
   </select>
 </div>
 {% endif %}
@@ -164,7 +222,7 @@ TEMPLATE = Template(r"""<!doctype html>
   </thead>
   <tbody>
     {% for row in rows %}
-    <tr class="{{ 'outlier-row' if row['_outlier'] else '' }}" data-panels="{{ row['_panels'] }}">
+    <tr class="{{ 'row-hyper' if row['_state'] == 'hyper' else ('row-hypo' if row['_state'] == 'hypo' else ('outlier-row' if row['_outlier'] and not has_delta else '')) }}" data-panels="{{ row['_panels'] }}">
       {% for col in columns %}
         {% if col == 'gene' %}<td class="gene-cell">{{ row['_gene_html'] }}</td>
         {% elif col == 'dmr_name' %}<td class="dmr-cell">{{ row['_dmr_html'] }}</td>
@@ -176,17 +234,54 @@ TEMPLATE = Template(r"""<!doctype html>
     {% endfor %}
   </tbody>
 </table>
+</div>
+
+<!-- ======================= TAB 2: RUN CONFIGURATION ======================= -->
+<div id="tab-config" class="tab-pane">
+  <div class="section-title">Report run</div>
+  <table class="info-table">
+    {% for k, v in run_info %}<tr><th>{{ k }}</th><td><code>{{ v | e }}</code></td></tr>
+    {% endfor %}
+  </table>
+
+  <div class="section-title">Cohort configuration{% if config_path %} <span class="muted">({{ config_path | e }})</span>{% endif %}</div>
+  {% if config_text %}
+  <pre class="config-pre">{{ config_text | e }}</pre>
+  {% else %}
+  <div class="muted">No cohort YAML supplied &ndash; re-run generate_report.py with <code>--config cohort.yaml</code>.</div>
+  {% endif %}
+</div>
+
+<!-- ======================= TAB 3: COLUMN DESCRIPTIONS ===================== -->
+<div id="tab-columns" class="tab-pane">
+  <table class="info-table">
+    <tr><th>Column</th><th>Description</th></tr>
+    {% for name, desc in column_docs %}
+    <tr><td class="col-name">{{ name }}</td><td>{{ desc | e }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
 <script>
 $(document).ready(function () {
   // scrollX/scrollY (DataTables' native scroll handling, header pinned via its
-  // own internal split header/body tables) instead of a fixed 100%-wide table --
-  // this is also what stops narrower text columns like gene_id from being
-  // squeezed by the other ~15 columns competing for a fixed viewport width.
+  // own internal split header/body tables) instead of a fixed 100%-wide table.
   var table = $('#report').DataTable({
     pageLength: 25, order: [], orderCellsTop: true,
     scrollX: true, scrollY: '600px', scrollCollapse: true
+  });
+
+  // Tabs. DataTables mis-sizes columns if it was laid out while hidden, so
+  // re-adjust whenever the Results tab is shown again.
+  $('.tab-btn').on('click', function () {
+    var target = $(this).data('tab');
+    $('.tab-btn').removeClass('active');
+    $(this).addClass('active');
+    $('.tab-pane').removeClass('active');
+    $('#' + target).addClass('active');
+    if (target === 'tab-results') { table.columns.adjust(); }
   });
 
   // Numeric column filters (coverage, delta, zscore, padj, etc.) support
@@ -198,9 +293,7 @@ $(document).ready(function () {
 
   function parseNumericFilter(raw) {
     // Optional leading "abs" makes the comparison apply to |value| -- useful
-    // for delta/zscore, where a hit can be hyper- or hypomethylated and you
-    // often want "either direction, magnitude >= X" rather than two separate
-    // filters (>=0.3 and <=-0.3) to catch both signs.
+    // for delta/zscore, where a hit can be hyper- or hypomethylated.
     var m = String(raw).trim().match(/^(abs)?\s*(>=|<=|>|<|=)?\s*(-?\d+\.?\d*)$/i);
     if (!m) return null;
     return { abs: !!m[1], op: m[2] || '=', val: parseFloat(m[3]) };
@@ -243,8 +336,7 @@ $(document).ready(function () {
     }
   });
 
-  // Gene-panel filter -- separate from the per-column filter row above, driven
-  // by either the dropdown or clicking a summary pill; both set the same filter.
+  // Gene-panel filter (single alphabetized dropdown).
   var activePanel = '';
   $.fn.dataTable.ext.search.push(function (settings, data, dataIndex) {
     if (!activePanel) return true;
@@ -254,17 +346,6 @@ $(document).ready(function () {
 
   $('#panel-select').on('change', function () {
     activePanel = $(this).val();
-    $('.panel-pill').removeClass('active').filter(function () {
-      return $(this).data('panel') === activePanel;
-    }).addClass('active');
-    table.draw();
-  });
-
-  $('.panel-pill').on('click', function () {
-    activePanel = $(this).data('panel') || '';
-    $('#panel-select').val(activePanel);
-    $('.panel-pill').removeClass('active');
-    $(this).addClass('active');
     table.draw();
   });
 
@@ -273,8 +354,6 @@ $(document).ready(function () {
     numericFilters = {};
     activePanel = '';
     $('#panel-select').val('');
-    $('.panel-pill').removeClass('active');
-    $('.panel-pill[data-panel=""]').addClass('active');
     table.columns().search('').draw();
   });
 });
@@ -343,6 +422,17 @@ def render_dmr_cell(dmr_field: str, disorder_field: str) -> str:
     return " ".join(parts)
 
 
+def methylation_state(delta, is_outlier: bool, shade_all: bool) -> str:
+    """'hyper' / 'hypo' / '' from the sign of delta (methylation - group_mean).
+    By default only outlier rows are shaded -- otherwise nearly every row in a
+    full cohort TSV would carry a tint and the shading would stop meaning anything."""
+    if pd.isna(delta) or not (is_outlier or shade_all):
+        return ""
+    if delta > 0:
+        return "hyper"
+    if delta < 0:
+        return "hypo"
+    return ""
 
 
 def compute_column_filters(df: pd.DataFrame, columns: list[str], max_options: int = 20) -> dict:
@@ -375,15 +465,20 @@ def compute_column_filters(df: pd.DataFrame, columns: list[str], max_options: in
             filters[col] = {"type": "text", "options": []}
     return filters
 
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--input", required=True, help="Cohort outlier TSV (run_cohort.py output)")
     p.add_argument("--output", required=True, help="Output HTML report path")
+    p.add_argument("--config", default=None,
+                    help="Cohort YAML used for the run; embedded verbatim in the 'Run configuration' tab")
     p.add_argument("--panelapp-cache", default="panelapp_cache.json",
                     help="Local JSON cache of PanelApp lookups (reused/extended across runs)")
     p.add_argument("--title", default="promethyl cohort outlier report")
     p.add_argument("--outliers-only", action="store_true",
                     help="Only include rows flagged as an outlier")
+    p.add_argument("--shade-all", action="store_true",
+                    help="Shade hyper/hypomethylated state on every row, not just outlier rows")
     args = p.parse_args()
 
     # dtype=str on the text-y columns stops pandas from inferring a numeric/
@@ -395,6 +490,7 @@ def main():
         args.input, sep="\t",
         dtype={"gene": str, "gene_id": str, "dmr_name": str, "disorder": str},
     )
+    n_input_rows = len(df)
 
     outlier_col = "outlier" if "outlier" in df.columns else ("any_outlier" if "any_outlier" in df.columns else None)
     if outlier_col:
@@ -410,15 +506,10 @@ def main():
 
     panelapp_cache = annotate_genes(all_symbols, Path(args.panelapp_cache))
 
-    # Every text-y column that can legitimately be blank (most rows have no gene,
-    # dmr_name, disorder or gene_id overlap) needs fillna("") here -- the writer
-    # already does this in memory, but an empty string written to TSV comes back
-    # as NaN on this fresh read, regardless of the dtype= hint above: dtype=str
-    # produces pandas' StringDtype here (pandas 3.x), and
-    # pd.api.types.is_object_dtype() -- used by an earlier version of this dtype
-    # check -- returns False for StringDtype, so a dtype-detection-based fillna
-    # silently misses exactly the columns dtype=str was applied to. Just fillna
-    # all of them unconditionally instead; it's dtype-agnostic and version-proof.
+    # Every text-y column that can legitimately be blank needs fillna("") here --
+    # an empty string written to TSV comes back as NaN on this fresh read, and
+    # dtype-detection-based fillna misses pandas' StringDtype. Just fillna all
+    # of them unconditionally; it's dtype-agnostic and version-proof.
     for col in ("gene", "gene_id", "dmr_name", "disorder"):
         if col in df.columns:
             df[col] = df[col].fillna("")
@@ -435,12 +526,22 @@ def main():
                 lambda r: render_dmr_cell(r["dmr_name"], r.get("disorder", "")), axis=1
             )
 
+    # Row shading by methylation state (sign of delta).
+    has_delta = "delta" in df.columns
+    if has_delta:
+        df["_state"] = [
+            methylation_state(d, o, args.shade_all) for d, o in zip(df["delta"], df["_outlier"])
+        ]
+    else:
+        df["_state"] = ""
+
+    # Panel dropdown: alphabetized (case-insensitive) with per-panel row counts.
     panel_counter = Counter()
     for panels_str in df["_panels"]:
         for panel in panels_str.split(";"):
             if panel:
                 panel_counter[panel] += 1
-    panel_counts = sorted(panel_counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    panel_counts = sorted(panel_counter.items(), key=lambda kv: kv[0].lower())
 
     for col, fmt in NUMERIC_DISPLAY_COLS.items():
         if col in df.columns:
@@ -448,6 +549,32 @@ def main():
 
     columns = [c for c in df.columns if not c.startswith("_") and c not in COLUMNS_DROPPED]
     columns = [c for c in COLUMN_PRIORITY if c in columns] + [c for c in columns if c not in COLUMN_PRIORITY]
+
+    # Column descriptions tab: displayed columns, in displayed order.
+    column_docs = [(c, COLUMN_DESCRIPTIONS.get(c, MISSING_DESCRIPTION)) for c in columns]
+    undocumented = [c for c in columns if c not in COLUMN_DESCRIPTIONS]
+    if undocumented:
+        print(f"! No description for column(s): {', '.join(undocumented)}", file=sys.stderr)
+
+    # Run configuration tab.
+    config_text, config_path = "", None
+    if args.config:
+        config_path = str(Path(args.config).resolve())
+        try:
+            config_text = Path(args.config).read_text()
+        except OSError as e:
+            print(f"! Could not read --config {args.config}: {e}", file=sys.stderr)
+    run_info = [
+        ("Command", " ".join([Path(sys.argv[0]).name] + sys.argv[1:])),
+        ("Input TSV", str(Path(args.input).resolve())),
+        ("Rows in input", str(n_input_rows)),
+        ("Rows displayed", f"{len(df)}" + (" (outliers only)" if args.outliers_only else "")),
+        ("Row shading", "all rows" if args.shade_all else "outlier rows only"),
+        ("PanelApp cache", str(Path(args.panelapp_cache).resolve())),
+        ("Generated", pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")),
+        ("Host", platform.node()),
+        ("Python / pandas", f"{platform.python_version()} / {pd.__version__}"),
+    ]
 
     column_filters = compute_column_filters(df, columns)
     html = TEMPLATE.render(
@@ -459,9 +586,16 @@ def main():
         numeric_display_cols=set(NUMERIC_DISPLAY_COLS),
         panel_counts=panel_counts,
         rows=df.to_dict(orient="records"),
+        has_delta=has_delta,
+        shade_all=args.shade_all,
+        run_info=run_info,
+        config_text=config_text,
+        config_path=config_path,
+        column_docs=column_docs,
     )
     Path(args.output).write_text(html)
     print(f"✓ Report written -> {args.output}")
+
 
 if __name__ == "__main__":
     main()
