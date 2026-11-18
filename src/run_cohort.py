@@ -15,7 +15,8 @@ import pandas as pd
 
 from CpG_meth import load_promoter_annotations
 from annotate import annotate_methylation, load_dmr_annotations, annotate_dmrs
-from cohort import build_cohort_matrix, detect_outliers, compute_cohort_statistics, to_long_format
+from cohort import (build_cohort_matrix, detect_outliers, compute_cohort_statistics,
+                    compute_haplotype_asm, to_long_format)
 
 
 def parse_args():
@@ -41,6 +42,13 @@ def parse_args():
     p.add_argument("--min-cpg-sites", type=int, default=1,
                     help="Minimum surviving CG positions backing a sample's own island call "
                          "for it to be eligible as an outlier (default 1 = no-op)")
+
+    p.add_argument("--min-hap-coverage", type=int, default=5,
+                    help="Minimum reads on EACH haplotype (summed over the island) to test for ASM")
+    p.add_argument("--min-asm-delta", type=float, default=0.3,
+                    help="Minimum |hap2 - hap1| methylation difference for the ASM flag")
+    p.add_argument("--asm-fdr", type=float, default=0.05,
+                    help="BH-adjusted p-value threshold for the ASM flag (per sample)")
 
     return p.parse_args()
 
@@ -105,6 +113,12 @@ def main():
                              min_delta=args.min_delta,
                              z_threshold=args.z_threshold,
                              min_cpg_sites=args.min_cpg_sites)
+    result = compute_haplotype_asm(result, all_ids,
+                                   min_hap_coverage=args.min_hap_coverage,
+                                   min_asm_delta=args.min_asm_delta,
+                                   fdr_threshold=args.asm_fdr)
+    n_asm = int(sum(result[f"asm_flag_{sid}"].sum() for sid in all_ids))
+    print(f"  ASM-flagged island x sample calls: {n_asm:,}")
     result = annotate_methylation(result, ann_df)
     if args.dmr_bed:
         dmr_df = load_dmr_annotations(args.dmr_bed)

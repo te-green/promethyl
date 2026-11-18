@@ -27,6 +27,7 @@ NUMERIC_DISPLAY_COLS = {
     "coverage": "{:.2f}", "methylation": "{:.2f}", "group_mean": "{:.2f}",
     "delta": "{:.2f}", "zscore": "{:.2f}","mod_score": "{:.2f}",
     "pval": "{:.2g}", "padj": "{:.2g}",
+    "hap1_mod_score": "{:.2f}", "hap2_mod_score": "{:.2f}", "asm_pval": "{:.2g}",
 }
 
 # Sample/location/gene/region first (the "what and where" of a hit), everything
@@ -35,6 +36,10 @@ NUMERIC_DISPLAY_COLS = {
 # covers it); disorder is folded into the dmr_name cell, never its own column.
 COLUMN_PRIORITY = ["sample", "chrom", "start", "end", "gene", "cpg_island", "dmr_name", "gene_id"]
 COLUMNS_DROPPED = {"transcript", "disorder"}
+# Haplotype working columns stay in the TSV but out of the report: only
+# hap1_mod_score, hap2_mod_score, asm_flag and asm_pval are displayed.
+COLUMNS_DROPPED |= {"hap1_mod_count", "hap1_unmod_count", "hap2_mod_count", "hap2_unmod_count",
+                    "n_hap_sites", "asm_delta", "asm_padj"}
 
 TEMPLATE = Template(r"""<!doctype html>
 <html>

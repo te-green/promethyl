@@ -57,6 +57,9 @@ def annotate_cpg_sites(cpg_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.DataFra
 def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_empty: bool = False) -> pd.DataFrame:
     # Infer sample IDs from column names dynamically
     samples = [c.replace("mod_count_", "") for c in merged_df.columns if c.startswith("mod_count_")]
+    # Samples that also carry per-site haplotype counts (see run_pbcpg.extract_haplotype_counts)
+    hap_cols = lambda s: [f"hap{h}_{k}_count_{s}" for h in (1, 2) for k in ("mod", "unmod")]
+    hap_samples = [s for s in samples if all(c in merged_df.columns for c in hap_cols(s))]
 
     islands = (
         ann_df[["cpg_island", "chrom", "start", "end"]]
@@ -78,6 +81,8 @@ def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_em
             cols = ["chrom", "start", "end", "cpg_island"]
             for s in samples:
                 cols += [f"n_cpg_sites_{s}", f"mod_count_{s}", f"unmod_count_{s}", f"coverage_{s}", f"mod_score_{s}"]
+            for s in hap_samples:
+                cols += hap_cols(s) + [f"n_hap_sites_{s}"]
             return pd.DataFrame(columns=cols)
         raise ValueError("No CpG sites overlapped any CpG island — check annotation file.")
 
@@ -95,8 +100,17 @@ def aggregate_to_islands(merged_df: pd.DataFrame, ann_df: pd.DataFrame, allow_em
             **{f"mod_count_{s}":       (f"mod_count_{s}",       "sum") for s in samples},
             **{f"unmod_count_{s}": (f"unmod_count_{s}", "sum") for s in samples},
             **{f"coverage_{s}":    (f"coverage_{s}",    "mean") for s in samples},
+            # Haplotype counts: pandas sum() skips NaN, so an island with no
+            # paired hap sites would get 0 -- n_hap_sites lets us turn that back into NaN.
+            **{f"n_hap_sites_{s}": (f"hap1_mod_count_{s}", "count") for s in hap_samples},
+            **{c: (c, "sum") for s in hap_samples for c in hap_cols(s)},
         )
     )
+
+    for s in hap_samples:
+        no_hap = agg[f"n_hap_sites_{s}"] == 0
+        for c in hap_cols(s):
+            agg.loc[no_hap, c] = np.nan
 
     for s in samples:
         total = agg[f"mod_count_{s}"] + agg[f"unmod_count_{s}"]

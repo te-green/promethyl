@@ -41,6 +41,9 @@ def parse_args():
                          "won't have pileup data there in the first place.")
     p.add_argument("--threads", type=int, default=10, help="Threads for modkit pileup")
     p.add_argument("--min-coverage", type=int, default=10, help="Minimum read coverage per site")
+    p.add_argument("--min-hap-coverage", type=int, default=5,
+                    help="Minimum read coverage on EACH haplotype at a CpG for it to contribute to the "
+                         "haplotype (ASM) comparison")
 
     return p.parse_args()
 
@@ -73,6 +76,7 @@ def main():
         methbat_dir=methbat_dir,
         threads=args.threads,
         min_coverage=args.min_coverage,
+        min_hap_coverage=args.min_hap_coverage,
     )
 
     if raw_df is None:

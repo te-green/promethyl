@@ -209,6 +209,81 @@ def detect_outliers(
     ).reset_index(drop=True)
 
 
+def _hap_pval(h1_mod: float, h1_unmod: float, h2_mod: float, h2_unmod: float) -> float:
+    """Two-sided test of hap1 vs hap2 methylated/unmethylated read counts.
+
+    Chi-squared (no continuity correction, same as the cohort test) unless any
+    expected cell count is < 5 -- with a 5-read-per-haplotype minimum that is
+    common, and chi-squared is unreliable there, so fall back to Fisher's exact.
+    """
+    from scipy.stats import chi2_contingency, fisher_exact
+
+    table = np.array([[h1_mod, h1_unmod], [h2_mod, h2_unmod]], dtype=float)
+    if (table.sum(axis=0) == 0).any() or (table.sum(axis=1) == 0).any():
+        return 1.0  # e.g. both haplotypes 100% methylated: no difference to test
+    _, p, _, expected = chi2_contingency(table, correction=False)
+    if expected.min() < 5:
+        _, p = fisher_exact(table.astype(int), alternative="two-sided")
+    return p
+
+
+def compute_haplotype_asm(
+    matrix: pd.DataFrame,
+    sample_ids: list[str],
+    min_hap_coverage: int = 5,
+    min_asm_delta: float = 0.3,
+    fdr_threshold: float = 0.05,
+) -> pd.DataFrame:
+    """Within-sample haplotype comparison (hap1 vs hap2) at every island.
+
+    Adds, per sample (all suffixed _<sid>, so to_long_format() handles them):
+      hap1_mod_score, hap2_mod_score  methylated fraction on each haplotype
+      asm_delta                       hap2 - hap1 (sign is arbitrary: hap1/hap2
+                                      labels are per phase block, not parental)
+      asm_pval / asm_padj             test p-value / BH-adjusted across the
+                                      islands tested in that sample
+      asm_flag                        padj < fdr_threshold AND |delta| >= min_asm_delta
+
+    An island is only tested if BOTH haplotypes have >= min_hap_coverage reads
+    summed over the CpGs that passed the per-site paired filter. Untested
+    islands get NaN scores/p-values and asm_flag False.
+    """
+    df = matrix.copy()
+
+    for sid in sample_ids:
+        cols = [f"hap{h}_{k}_count_{sid}" for h in (1, 2) for k in ("mod", "unmod")]
+        if not all(c in df.columns for c in cols):
+            for name in ("hap1_mod_score", "hap2_mod_score", "asm_delta", "asm_pval", "asm_padj"):
+                df[f"{name}_{sid}"] = np.nan
+            df[f"asm_flag_{sid}"] = False
+            continue
+
+        h1m, h1u, h2m, h2u = (df[c] for c in cols)
+        h1_cov, h2_cov = h1m + h1u, h2m + h2u
+        testable = (h1_cov >= min_hap_coverage) & (h2_cov >= min_hap_coverage)  # NaN -> False
+
+        df[f"hap1_mod_score_{sid}"] = (h1m / h1_cov).where(testable)
+        df[f"hap2_mod_score_{sid}"] = (h2m / h2_cov).where(testable)
+        df[f"asm_delta_{sid}"] = df[f"hap2_mod_score_{sid}"] - df[f"hap1_mod_score_{sid}"]
+
+        pval = pd.Series(np.nan, index=df.index)
+        idx = df.index[testable]
+        pval.loc[idx] = [
+            _hap_pval(a, b, c, d) for a, b, c, d in zip(h1m[idx], h1u[idx], h2m[idx], h2u[idx])
+        ]
+        padj = pd.Series(np.nan, index=df.index)
+        if len(idx):
+            padj.loc[idx] = bh_adjust(pval.loc[idx])
+
+        df[f"asm_pval_{sid}"] = pval
+        df[f"asm_padj_{sid}"] = padj
+        df[f"asm_flag_{sid}"] = (
+            (padj < fdr_threshold) & (df[f"asm_delta_{sid}"].abs() >= min_asm_delta)
+        ).fillna(False).astype(bool)
+
+    return df
+
+
 def to_long_format(df: pd.DataFrame, sample_ids: list[str]) -> pd.DataFrame:
     """
     Reshape a wide cohort dataframe (one row per island, per-sample columns
